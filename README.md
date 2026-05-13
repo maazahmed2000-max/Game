@@ -1,18 +1,40 @@
 # Kitchen Rush (co-op prototype)
 
-Python + **pygame-ce** kitchen game with isometric view, two players, and a **browser build** via [pygbag](https://github.com/pygame-web/pygbag).
+Python + **pygame-ce** isometric kitchen game: **one player per device**. A friend **joins online** with a **username** and **room code** from the lobby (no shared keyboard).
 
-## Play in the browser (after GitHub Pages deploy)
+The **game logic runs on a small FastAPI server**; the pygame app is a thin client (HTTP). The **browser build** still uses [pygbag](https://github.com/pygame-web/pygbag).
 
-Push to `main`, then in the repo go to **Settings → Pages → Source: GitHub Actions**.  
-When the **Publish web game** workflow finishes, open the **Pages** URL from the workflow summary (usually `https://<your-username>.github.io/<repo>/`).
+## 1) Run the game server (required)
 
-## Run on your PC
+From the repo root:
+
+```bash
+pip install -r server/requirements.txt
+uvicorn server.app:app --host 127.0.0.1 --port 8765
+```
+
+Deploy the same app to **Render**, **Railway**, **Fly.io**, etc. (see `Procfile`). You need a **public https URL** for the web build on GitHub Pages.
+
+## 2) Run the client (PC)
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
+
+By default the client talks to `http://127.0.0.1:8765`. To point elsewhere:
+
+```powershell
+$env:GAME_API_URL="https://your-api.onrender.com"; python main.py
+```
+
+For a **pygbag / GitHub Pages** build, set `API_BASE_URL` in `constants.py` to that **https** URL before running `build_web.ps1` (browsers block mixed content).
+
+## 3) Play flow
+
+1. Host: **Host game** → enter name → **Create** → share the **room code**.
+2. Guest (other device): **Join** → enter **username** + code → **Join game**.
+3. Each device uses **WASD + Space** (or **stick + Use** on touch).
 
 ## Build the web version locally
 
@@ -21,26 +43,10 @@ python main.py
 py -m http.server 8000 --directory .\build\web
 ```
 
-Open `http://localhost:8000` (on your phone, use your PC’s LAN IP instead of `localhost`).
+## GitHub Pages
 
-## Push to GitHub (you already have this folder)
+Push to `main`, enable **Pages → GitHub Actions**. The workflow publishes `build/web` only; **you still host the API separately** and set `API_BASE_URL` in `constants.py` for the wasm bundle.
 
-Your code is committed on branch **`main`** locally. If it is not on GitHub yet:
+## First-time GitHub push
 
-1. Open **GitHub Desktop** → **File → Add local repository** → choose `C:\Users\maaza\Documents\GitHub\Game` (or open it if it is already listed).
-2. Click **Publish repository** *or* **Push origin** (depending on whether GitHub already has an empty `Game` repo).
-3. If GitHub says the remote does not exist, create a **public** repo named **`Game`** on your account first, then set the remote in this folder:
-   `git remote set-url origin https://github.com/<YOUR_USERNAME>/Game.git`
-
-## Enable the playable web build (GitHub Pages)
-
-After the first successful push: **Settings → Pages → Build and deployment → Source: GitHub Actions**.  
-Wait for the **Publish web game** workflow, then open the **Pages** URL from the workflow run (often `https://<username>.github.io/Game/`).
-
-### Alternate: GitHub CLI
-
-From this folder: `gh auth login` then `git push -u origin main`, or run **`.\complete_github.ps1`** only if you still need to create the repo from scratch.
-
-If the default remote URL is wrong for your account, run:
-
-`git remote set-url origin https://github.com/<YOUR_USERNAME>/Game.git`
+Use **`.\complete_github.ps1`** (after `gh auth login`) or GitHub Desktop, as in earlier setup notes.

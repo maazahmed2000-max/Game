@@ -1,24 +1,26 @@
 """
-Overcooked-style kitchen: isometric look, two players, touch sticks + use buttons.
+Kitchen Rush — online co-op: host creates a room; friend joins with username + code.
+One player per device. Requires the FastAPI server (see server/).
 
-Desktop: python main.py
-Web (pygbag): run build_web.ps1, then open the test server URL or deploy build/web.
+Desktop: pip install -r requirements.txt && pip install -r server/requirements.txt
+         uvicorn server.app:app --port 8765
+         python main.py
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import sys
-from typing import List
+from typing import Any, Dict
 
 import pygame
 
-from constants import BG, FPS, PLAYER1, PLAYER2, SCREEN_H, SCREEN_W
+from constants import API_BASE_URL, BG, FPS, PLAYER1, PLAYER2, SCREEN_H, SCREEN_W
 from iso_render import draw_players_iso, draw_world_iso, make_iso_view
-from kitchen import Cell, Order, RECIPE_BURGER, default_map, station_at
-from player import Player
-from touch_controls import DualSticks
+from kitchen import Cell, default_map
+from lobby import GameSession, run_lobby
+from net_client import ApiError, api_get, api_post
+from touch_controls import SoloTouch
 
 
 def font(size: int) -> pygame.font.Font:
@@ -27,36 +29,38 @@ def font(size: int) -> pygame.font.Font:
     return pygame.font.SysFont("segoeui", size)
 
 
-async def main() -> None:
-    pygame.init()
-    pygame.display.set_caption("Kitchen Rush — co-op prototype")
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    clock = pygame.time.Clock()
-
-    view = make_iso_view()
-    sticks = DualSticks(SCREEN_W, SCREEN_H)
-
-    cells = default_map()
-    p1 = Player(2.0, 2.0)
-    p2 = Player(5.0, 2.0)
-
-    orders: List[Order] = []
-    next_spawn = 2.5
-    score = 0
-
-    cd1 = 0.0
-    cd2 = 0.0
-
-    f_ui = font(22)
-    f_small = font(17)
-    f_btn = font(16)
+async def run_game_network(
+    screen: pygame.Surface,
+    clock: pygame.time.Clock,
+    view: Any,
+    sticks: SoloTouch,
+    session: GameSession,
+    f_ui: pygame.font.Font,
+    f_small: pygame.font.Font,
+    f_btn: pygame.font.Font,
+) -> None:
+    cells: list[list[Cell]] = default_map()
+    state: Dict[str, Any] = {
+        "p1": {"c": 2.0, "r": 2.0},
+        "p2": {"c": 5.0, "r": 2.0},
+        "score": 0,
+        "order_hud": "…",
+        "p2_joined": session.me == 2,
+        "names": {"1": "…", "2": "…"},
+    }
+    rid = session.room_id.upper()
+    last_space = False
+    input_acc = 0.0
+    poll_acc = 0.0
+    err_flash = ""
+    pending_pulse = False
 
     running = True
-
     while running:
-        dt = clock.tick(FPS) / 1000.0
-        cd1 = max(0.0, cd1 - dt)
-        cd2 = max(0.0, cd2 - dt)
+        ms = clock.tick(FPS)
+        dt = ms / 1000.0
+        input_acc += dt
+        poll_acc += dt
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -66,93 +70,100 @@ async def main() -> None:
             sticks.handle_event(event)
 
         keys = pygame.key.get_pressed()
-        lv, rv = sticks.vectors()
+        lv = sticks.vector()
+        dx = float(keys[pygame.K_d] - keys[pygame.K_a]) + lv[0]
+        dy = float(keys[pygame.K_s] - keys[pygame.K_w]) + lv[1]
+        tap_use = sticks.pop_use()
+        space_down = bool(keys[pygame.K_SPACE])
+        pulse = (space_down and not last_space) or tap_use
+        last_space = space_down
+        if pulse:
+            pending_pulse = True
 
-        dx1 = float(keys[pygame.K_d] - keys[pygame.K_a]) + lv[0]
-        dy1 = float(keys[pygame.K_s] - keys[pygame.K_w]) + lv[1]
-        dx2 = float(keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) + rv[0]
-        dy2 = float(keys[pygame.K_DOWN] - keys[pygame.K_UP]) + rv[1]
+        if input_acc >= 0.05:
+            input_acc = 0.0
+            pl = pending_pulse
+            pending_pulse = False
+            try:
+                await api_post(
+                    f"/api/rooms/{rid}/input",
+                    {
+                        "player": session.me,
+                        "dx": dx,
+                        "dy": dy,
+                        "pulse_interact": pl,
+                    },
+                )
+            except ApiError as e:
+                err_flash = str(e)[:120]
 
-        p1.update(cells, dx1, dy1, dt)
-        p2.update(cells, dx2, dy2, dt)
+        if poll_acc >= 0.05:
+            poll_acc = 0.0
+            try:
+                state = await api_get(f"/api/rooms/{rid}/state")
+            except ApiError as e:
+                err_flash = str(e)[:120]
 
-        tap1, tap2 = sticks.pop_interact()
-        want1 = keys[pygame.K_SPACE] or tap1
-        want2 = keys[pygame.K_RCTRL] or tap2
-
-        def try_interact(player: Player, cd: float) -> float:
-            nonlocal score
-            if cd > 0 or not orders:
-                return cd
-            st = station_at(cells, *player.center_tile())
-            if st is None:
-                return cd
-            for o in orders:
-                if o.apply_station(st):
-                    if o.is_done():
-                        score += 10 + int(max(0, o.time_left))
-                        orders.remove(o)
-                    break
-            return 0.22
-
-        if want1:
-            cd1 = try_interact(p1, cd1)
-        if want2:
-            cd2 = try_interact(p2, cd2)
-
-        next_spawn -= dt
-        if next_spawn <= 0 and len(orders) < 3:
-            orders.append(Order(RECIPE_BURGER, time_left=45.0 + random.random() * 15))
-            next_spawn = 8.0 + random.random() * 6.0
-
-        for o in orders:
-            o.time_left -= dt
-
-        for o in [x for x in orders if x.time_left <= 0]:
-            orders.remove(o)
-            score = max(0, score - 5)
+        p1c = float(state["p1"]["c"])
+        p1r = float(state["p1"]["r"])
+        p2c = float(state["p2"]["c"])
+        p2r = float(state["p2"]["r"])
+        score = int(state.get("score", 0))
+        order_hud = str(state.get("order_hud", ""))
+        n1 = str(state.get("names", {}).get("1", ""))
+        n2 = str(state.get("names", {}).get("2", ""))
 
         screen.fill(BG)
-        highlights = [p1.center_tile(), p2.center_tile()]
-        draw_world_iso(screen, view, cells, highlights)
+        h1 = (int(round(p1c)), int(round(p1r)))
+        h2 = (int(round(p2c)), int(round(p2r)))
+        draw_world_iso(screen, view, cells, [h1, h2])
         draw_players_iso(
             screen,
             view,
             [
-                (p1.col, p1.row, PLAYER1),
-                (p2.col, p2.row, PLAYER2),
+                (p1c, p1r, PLAYER1),
+                (p2c, p2r, PLAYER2),
             ],
         )
-
         sticks.draw(screen, f_btn)
 
-        hud_y = 10
-        screen.blit(f_ui.render(f"Score: {score}", True, (240, 240, 245)), (16, hud_y))
-        hud_y += 30
-        screen.blit(
-            f_small.render(
-                "P1: WASD + Space   |   P2: Arrows + Right Ctrl   |   Touch: sticks + P1/P2 use",
-                True,
-                (195, 198, 210),
-            ),
-            (16, hud_y),
-        )
+        hud_y = 8
+        role = "You are host (P1)" if session.me == 1 else "You are guest (P2)"
+        screen.blit(f_ui.render(f"Room {rid}  |  {role}", True, (220, 225, 240)), (12, hud_y))
+        hud_y += 28
+        screen.blit(f_small.render(f"{n1}  vs  {n2}  —  Score: {score}", True, (195, 200, 215)), (12, hud_y))
         hud_y += 26
-        if orders:
-            o = orders[0]
-            screen.blit(
-                f_small.render(
-                    f"Order: {o.progress_text()}  |  time {o.time_left:.0f}s",
-                    True,
-                    (255, 220, 160),
-                ),
-                (16, hud_y),
-            )
-        else:
-            screen.blit(f_small.render("Waiting for orders…", True, (175, 178, 190)), (16, hud_y))
+        screen.blit(f_small.render(order_hud, True, (255, 210, 150)), (12, hud_y))
+        hud_y += 26
+        screen.blit(
+            f_small.render("WASD + Space (or stick + Use)  |  Esc = leave match", True, (150, 155, 175)),
+            (12, hud_y),
+        )
+        if err_flash:
+            screen.blit(f_small.render(err_flash, True, (255, 120, 120)), (12, SCREEN_H - 40))
 
         pygame.display.flip()
         await asyncio.sleep(0)
+
+
+async def main() -> None:
+    pygame.init()
+    pygame.display.set_caption("Kitchen Rush — online")
+    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+    clock = pygame.time.Clock()
+
+    view = make_iso_view()
+    sticks = SoloTouch(SCREEN_W, SCREEN_H)
+
+    f_ui = font(22)
+    f_small = font(17)
+    f_btn = font(16)
+
+    while True:
+        session = await run_lobby(screen, clock, f_ui, f_small)
+        if session is None:
+            break
+        await run_game_network(screen, clock, view, sticks, session, f_ui, f_small, f_btn)
 
     pygame.quit()
 
