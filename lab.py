@@ -12,15 +12,14 @@ from constants import COLS, ROWS
 class Cell(Enum):
     FLOOR = auto()
     WALL = auto()
-    RECEIVING = auto()  # pick up incoming wafer
-    PROBER_LOAD = auto()  # load cassette into prober
-    PROBER_WAIT = auto()  # cassette inventory / map — stand here for progress
-    TEST_BENCH = auto()  # set E / O / EO / Oband / Cband / Other
-    TEST_CHAMBER = auto()  # automated test run — progress bar
-    FINISHED_RACK = auto()  # completed wafers
+    RECEIVING = auto()
+    PROBER_LOAD = auto()
+    PROBER_WAIT = auto()
+    TEST_BENCH = auto()
+    TEST_CHAMBER = auto()
+    FINISHED_RACK = auto()
 
 
-# One wafer’s linear route through the lab
 RECIPE_WAFER: Tuple[Cell, ...] = (
     Cell.RECEIVING,
     Cell.PROBER_LOAD,
@@ -61,6 +60,11 @@ def test_label(t: TestSpec) -> str:
     }[t]
 
 
+# Five incoming booths (left bay) — matches floor-plan “column of small rooms”
+def receiving_booths() -> List[Tuple[int, int]]:
+    return [(3, 4), (3, 5), (3, 6), (3, 7), (3, 8)]
+
+
 def default_map() -> List[List[Cell]]:
     g: List[List[Cell]] = [[Cell.FLOOR for _ in range(COLS)] for _ in range(ROWS)]
 
@@ -71,15 +75,15 @@ def default_map() -> List[List[Cell]]:
         g[r][0] = Cell.WALL
         g[r][COLS - 1] = Cell.WALL
 
-    for c in range(4, 10):
-        g[4][c] = Cell.WALL
+    for c, r in receiving_booths():
+        g[r][c] = Cell.RECEIVING
 
-    g[6][2] = Cell.RECEIVING
-    g[6][4] = Cell.PROBER_LOAD
-    g[6][5] = Cell.PROBER_WAIT
-    g[4][7] = Cell.TEST_BENCH
-    g[4][10] = Cell.TEST_CHAMBER
-    g[6][12] = Cell.FINISHED_RACK
+    # Open central floor — stations along main run (no interior walls)
+    g[6][10] = Cell.PROBER_LOAD
+    g[6][12] = Cell.PROBER_WAIT
+    g[5][16] = Cell.TEST_BENCH
+    g[5][20] = Cell.TEST_CHAMBER
+    g[6][24] = Cell.FINISHED_RACK
 
     return g
 
@@ -106,13 +110,23 @@ def station_at(cells: List[List[Cell]], col: int, row: int) -> Optional[Cell]:
     return None
 
 
-class WaferOrder:
-    """One wafer lot with a required test configuration."""
+def all_station_tiles(cells: List[List[Cell]], kind: Cell) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if cells[r][c] == kind:
+                out.append((c, r))
+    return out
 
-    def __init__(self, recipe: Tuple[Cell, ...], required: TestSpec) -> None:
+
+class WaferOrder:
+    """One wafer lot; pickup only at the randomly assigned receiving booth for this lot."""
+
+    def __init__(self, recipe: Tuple[Cell, ...], required: TestSpec, spawn_booth: Tuple[int, int]) -> None:
         self.recipe = recipe
         self.completed_steps: List[Cell] = []
         self.required = required
+        self.spawn_booth = spawn_booth
 
     def next_expected(self) -> Optional[Cell]:
         idx = len(self.completed_steps)
@@ -154,8 +168,16 @@ class WaferOrder:
                 parts.append(f"->{label}")
             else:
                 parts.append(label)
-        return " ".join(parts) + f"  |  target test: {test_label(self.required)}"
+        bx, by = self.spawn_booth
+        return (
+            " ".join(parts)
+            + f"  |  target test: {test_label(self.required)}  |  pickup booth ({bx},{by})"
+        )
 
 
 def random_test() -> TestSpec:
     return random.choice(TEST_CYCLE)
+
+
+def random_spawn_booth() -> Tuple[int, int]:
+    return random.choice(receiving_booths())

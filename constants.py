@@ -1,21 +1,24 @@
 """Screen and gameplay tuning — tweak here first."""
 
 TILE = 48
-COLS, ROWS = 14, 10
-SCREEN_W = 1180
-SCREEN_H = 720
+# Wide floor plan (corridor + bays), blueprint-style
+COLS = 28
+ROWS = 12
+SCREEN_W = 1280
+SCREEN_H = 760
 FPS = 60
 
-BG = (24, 28, 38)
-FLOOR = (52, 58, 72)
-WALL = (36, 40, 52)
+BG = (12, 14, 18)
+FLOOR = (18, 20, 26)
+PLAN_LINE = (200, 205, 220)
+WALL = (28, 30, 38)
 LAB_TECH = (210, 222, 240)
-COWORKER_COAT = (188, 198, 218)
 HIGHLIGHT = (255, 228, 120)
 
 SHIFT_SECONDS = 180
-BUMP_TIME_PENALTY = 6.0
-BUMP_RADIUS = 0.72
-
 INVENTORY_WAIT_S = 2.6
 CHAMBER_RUN_S = 3.1
+
+# New wafer lots every 10–15 s (randomized)
+SPAWN_MIN_S = 10.0
+SPAWN_MAX_S = 15.0

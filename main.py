@@ -6,7 +6,6 @@ WASD + Space, or stick + Use. Finish wafers before the shift timer ends.
 from __future__ import annotations
 
 import asyncio
-import math
 import random
 import sys
 from typing import List, Optional
@@ -15,18 +14,16 @@ import pygame
 
 from constants import (
     BG,
-    BUMP_RADIUS,
-    BUMP_TIME_PENALTY,
     CHAMBER_RUN_S,
-    COWORKER_COAT,
     FPS,
     INVENTORY_WAIT_S,
     LAB_TECH,
     SCREEN_H,
     SCREEN_W,
     SHIFT_SECONDS,
+    SPAWN_MAX_S,
+    SPAWN_MIN_S,
 )
-from coworker import Coworker
 from iso_render import draw_players_iso, draw_world_iso, make_iso_view
 from lab import (
     RECIPE_WAFER,
@@ -34,6 +31,7 @@ from lab import (
     Cell,
     WaferOrder,
     default_map,
+    random_spawn_booth,
     random_test,
     station_at,
     test_label,
@@ -80,9 +78,9 @@ async def run_menu(screen: pygame.Surface, clock: pygame.time.Clock, f: pygame.f
         t = f.render("PSI Quantum — wafer test shift", True, (238, 242, 252))
         screen.blit(t, (SCREEN_W // 2 - t.get_width() // 2, 80))
         lines = [
-            "Lab coat tech: receive silicon wafers, load the prober, wait for cassette inventory,",
+            "Lab coat tech: pick up each lot at its marked receiving booth, load the prober, wait for cassette inventory,",
             "set the correct test (E, O, EO, Oband, Cband, Other), run the chamber, rack finished lots.",
-            "Bump a coworker or rush into equipment while holding a wafer — you drop it and lose shift time.",
+            "New wafer lots arrive on a random schedule — watch the HUD and the glowing booth for the next pickup.",
         ]
         y = 140
         for line in lines:
@@ -112,24 +110,18 @@ async def run_shift(
     fonts: tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font],
 ) -> None:
     f_ui, f_small, f_btn = fonts
+    f_world = font(14)
     cells = default_map()
-    player = Player(2.0, 6.0)
-    coworkers = [
-        Coworker(5.2, 6.0, 9.0, 6.0, speed=1.0),
-        Coworker(7.0, 2.2, 7.0, 7.8, speed=0.85),
-    ]
+    player = Player(14.0, 6.0)
     orders: List[WaferOrder] = []
-    next_spawn = 2.0
+    next_spawn = random.uniform(SPAWN_MIN_S, SPAWN_MAX_S)
     shift_left = float(SHIFT_SECONDS)
     wafers_done = 0
     interact_cd = 0.0
-    bump_cd = 0.0
     inv_prog = 0.0
     ch_prog = 0.0
     dial_i = 0
     last_space = False
-    bump_msg = ""
-    bump_msg_t = 0.0
 
     running = True
     while running:
@@ -137,8 +129,6 @@ async def run_shift(
         await asyncio.sleep(0)
         shift_left -= dt
         interact_cd = max(0.0, interact_cd - dt)
-        bump_cd = max(0.0, bump_cd - dt)
-        bump_msg_t = max(0.0, bump_msg_t - dt)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -164,27 +154,12 @@ async def run_shift(
         last_space, pulse = _pulse_space(keys, last_space, tap)
 
         player.update(cells, dx, dy, dt)
-        for cw in coworkers:
-            cw.update(cells, dt)
 
-        if player.carrying_wafer and bump_cd <= 0:
-            for cw in coworkers:
-                d = math.hypot(player.col - cw.col, player.row - cw.row)
-                if d < BUMP_RADIUS:
-                    player.drop_wafer()
-                    if orders:
-                        orders.pop(0)
-                    shift_left -= BUMP_TIME_PENALTY
-                    bump_msg = f"Bumped a coworker — wafer lost and −{int(BUMP_TIME_PENALTY)} s on the clock"
-                    bump_msg_t = 2.5
-                    bump_cd = 1.0
-                    inv_prog = ch_prog = 0.0
-                    dial_i = 0
-                    break
-
+        exp_for_bar: Optional[Cell] = None
         if orders:
             o = orders[0]
             exp = o.next_expected()
+            exp_for_bar = exp
             pc, pr = player.center_tile()
             st = station_at(cells, pc, pr)
 
@@ -205,7 +180,8 @@ async def run_shift(
                 ch_prog = 0.0
 
             if pulse and interact_cd <= 0:
-                if exp == Cell.RECEIVING and st == Cell.RECEIVING and not player.carrying_wafer:
+                bx, by = o.spawn_booth
+                if exp == Cell.RECEIVING and st == Cell.RECEIVING and (pc, pr) == (bx, by) and not player.carrying_wafer:
                     if o.apply_station(Cell.RECEIVING):
                         player.carrying_wafer = True
                         interact_cd = 0.22
@@ -229,30 +205,49 @@ async def run_shift(
 
         next_spawn -= dt
         if next_spawn <= 0 and len(orders) < 2:
-            orders.append(WaferOrder(RECIPE_WAFER, random_test()))
-            next_spawn = 10.0 + random.random() * 6.0
+            orders.append(WaferOrder(RECIPE_WAFER, random_test(), random_spawn_booth()))
+            next_spawn = random.uniform(SPAWN_MIN_S, SPAWN_MAX_S)
 
         if shift_left <= 0:
             running = False
 
         screen.fill(BG)
-        hl = [player.center_tile()]
-        draw_world_iso(screen, view, cells, hl)
-        crew = [(player.col, player.row, LAB_TECH), *[(*cw.grid_pos(), COWORKER_COAT) for cw in coworkers]]
-        carries = tuple([player.carrying_wafer] + [False] * len(coworkers))
-        draw_players_iso(screen, view, crew, carries)
+        pc, pr = player.center_tile()
+        hl: List[tuple[int, int]] = [(pc, pr)]
+        if orders and orders[0].next_expected() == Cell.RECEIVING and not player.carrying_wafer:
+            hl.append(orders[0].spawn_booth)
+
+        pending_wafers: List[tuple[int, int]] = []
+        if orders and orders[0].next_expected() == Cell.RECEIVING and not player.carrying_wafer:
+            pending_wafers.append(orders[0].spawn_booth)
+
+        draw_world_iso(
+            screen,
+            view,
+            cells,
+            hl,
+            pending_wafer_tiles=pending_wafers,
+            world_progress_font=f_world,
+            expected_step=exp_for_bar,
+            inv_prog=inv_prog,
+            ch_prog=ch_prog,
+        )
+        draw_players_iso(screen, view, [(player.col, player.row, LAB_TECH)], (player.carrying_wafer,))
         sticks.draw(screen, f_btn)
 
         hud_y = 8
-        screen.blit(f_ui.render(f"Shift time: {max(0, shift_left):.0f}s   |   Wafers completed: {wafers_done}", True, (235, 238, 250)), (12, hud_y))
+        screen.blit(
+            f_ui.render(f"Shift time: {max(0, shift_left):.0f}s   |   Wafers completed: {wafers_done}", True, (235, 238, 250)),
+            (12, hud_y),
+        )
         hud_y += 30
         if orders:
             o = orders[0]
             screen.blit(f_small.render(o.progress_text(), True, (255, 220, 170)), (12, hud_y))
             hud_y += 26
             exp = o.next_expected()
-            pc, pr = player.center_tile()
-            st = station_at(cells, pc, pr)
+            pc2, pr2 = player.center_tile()
+            st = station_at(cells, pc2, pr2)
             if exp == Cell.PROBER_WAIT and st == Cell.PROBER_WAIT:
                 w = int((SCREEN_W - 80) * min(1.0, inv_prog / INVENTORY_WAIT_S))
                 pygame.draw.rect(screen, (50, 55, 70), (40, hud_y, SCREEN_W - 80, 14), border_radius=4)
@@ -276,16 +271,12 @@ async def run_shift(
         else:
             screen.blit(f_small.render("Waiting for incoming wafer lot…", True, (160, 165, 185)), (12, hud_y))
 
-        if bump_msg_t > 0 and bump_msg:
-            screen.blit(f_small.render(bump_msg, True, (255, 130, 130)), (12, SCREEN_H - 88))
-
         screen.blit(
             f_small.render("WASD move · Space / Use = interact · A/D cycle test · Esc = menu", True, (130, 135, 155)),
             (12, SCREEN_H - 44),
         )
         pygame.display.flip()
 
-    # Brief result
     t0 = 2.5
     while t0 > 0:
         dt = clock.tick(60) / 1000.0
@@ -321,4 +312,5 @@ async def main() -> None:
     pygame.quit()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
