@@ -1,0 +1,2 @@
+# pygame-ce is the community build; pygbag targets pygame-ce in the browser.
+pygame-ce>=2.5.0
