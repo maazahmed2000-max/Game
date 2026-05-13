@@ -136,13 +136,22 @@ async def run_lobby(
         screen.blit(font.render("Kitchen Rush — online co-op", True, (235, 238, 250)), (SCREEN_W // 2 - 200, y))
         y += 48
         screen.blit(
-            font_small.render("One player on this device; a friend joins from another with your room code.", True, (170, 176, 195)),
-            (SCREEN_W // 2 - 340, y),
+            font_small.render(
+                "Not GitHub login — use your Pages URL (.github.io). First open may show “Downloading…” for up to ~1 min.",
+                True,
+                (155, 175, 210),
+            ),
+            (SCREEN_W // 2 - 420, y),
+        )
+        y += 28
+        screen.blit(
+            font_small.render("One device = one chef; a friend joins from their phone with your room code.", True, (170, 176, 195)),
+            (SCREEN_W // 2 - 380, y),
         )
 
         if mode is None:
             _draw_button(screen, btn_host, "Host game (get room code)", font_small, btn_host.collidepoint(mx, my))
-            _draw_button(screen, btn_join, "Join with username + code", font_small, btn_join.collidepoint(mx, my))
+            _draw_button(screen, btn_join, "Join friend (nickname + room code)", font_small, btn_join.collidepoint(mx, my))
         elif mode == "host_form":
             screen.blit(font_small.render("Your name (host):", True, (210, 215, 230)), (SCREEN_W // 2 - 200, 340))
             pygame.draw.rect(screen, (40, 44, 58), pygame.Rect(SCREEN_W // 2 - 200, 368, 400, 40), border_radius=6)
@@ -158,7 +167,7 @@ async def run_lobby(
             br = (90, 140, 200) if join_focus == "room" else (45, 48, 62)
             pygame.draw.rect(screen, br, rect_room, border_radius=6)
             screen.blit(font_small.render(join_room, True, (245, 245, 250)), (SCREEN_W // 2 - 190, 358))
-            screen.blit(font_small.render("Your username:", True, (210, 215, 230)), (SCREEN_W // 2 - 200, 398))
+            screen.blit(font_small.render("In-game nickname (any name you like):", True, (210, 215, 230)), (SCREEN_W // 2 - 200, 398))
             bn = (90, 140, 200) if join_focus == "name" else (45, 48, 62)
             pygame.draw.rect(screen, bn, rect_name, border_radius=6)
             screen.blit(font_small.render(join_name or "…", True, (245, 245, 250)), (SCREEN_W // 2 - 190, 438))
