@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import pygame
 
-from constants import BG, SCREEN_H, SCREEN_W
+from constants import API_BASE_URL, BG, SCREEN_H, SCREEN_W
 from net_client import ApiError, api_get, api_post
 
 
@@ -49,8 +49,14 @@ async def run_lobby(
     join_name = ""
     join_focus: str = "room"
     err_msg = ""
+    busy_msg = ""
     room_waiting: Optional[str] = None
     poll_acc = 0.0
+
+    task_create: Optional[asyncio.Task[Any]] = None
+    task_join: Optional[asyncio.Task[Any]] = None
+    join_rid_pending = ""
+    task_poll: Optional[asyncio.Task[Any]] = None
 
     btn_host = pygame.Rect(SCREEN_W // 2 - 200, 220, 400, 52)
     btn_join = pygame.Rect(SCREEN_W // 2 - 200, 290, 400, 52)
@@ -84,52 +90,97 @@ async def run_lobby(
                     elif btn_join.collidepoint(event.pos):
                         mode = "join_form"
                         err_msg = ""
-                elif mode == "host_form" and btn_create.collidepoint(event.pos):
+                elif mode == "host_form" and btn_create.collidepoint(event.pos) and task_create is None:
                     err_msg = ""
-                    try:
-                        data = await api_post("/api/rooms", {"host_name": (host_name.strip() or "Chef")[:18]})
-                        room_waiting = str(data["room_id"])
-                        mode = "host_wait"
-                    except ApiError as e:
-                        err_msg = str(e)[:220]
-                elif mode == "join_form" and btn_go.collidepoint(event.pos):
+                    busy_msg = "Talking to game server…"
+                    task_create = asyncio.create_task(
+                        api_post("/api/rooms", {"host_name": (host_name.strip() or "Chef")[:18]})
+                    )
+                elif mode == "join_form" and btn_go.collidepoint(event.pos) and task_join is None:
                     rid = join_room.strip().upper().replace(" ", "")
                     nm = (join_name.strip() or "Guest")[:18]
                     if len(rid) < 4:
                         err_msg = "Enter the room code from the host."
                     else:
-                        try:
-                            await api_post(f"/api/rooms/{rid}/join", {"username": nm})
-                            return GameSession(room_id=rid, me=2)
-                        except ApiError as e:
-                            err_msg = str(e)[:220]
+                        err_msg = ""
+                        busy_msg = "Joining room…"
+                        join_rid_pending = rid
+                        task_join = asyncio.create_task(api_post(f"/api/rooms/{rid}/join", {"username": nm}))
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
+                    if task_create:
+                        task_create.cancel()
+                        task_create = None
+                        busy_msg = ""
+                    if task_join:
+                        task_join.cancel()
+                        task_join = None
+                        busy_msg = ""
+                    if task_poll:
+                        task_poll.cancel()
+                        task_poll = None
                     if mode in ("host_wait", "host_form", "join_form"):
                         mode = None
                         room_waiting = None
                         err_msg = ""
                     else:
                         return None
-                elif mode == "host_form":
+                elif mode == "host_form" and task_create is None:
                     host_name = _text_edit(host_name, 18, event)
-                elif mode == "join_form":
+                elif mode == "join_form" and task_join is None:
                     if join_focus == "room":
                         join_room = _text_edit(join_room, 10, event).upper()
                     else:
                         join_name = _text_edit(join_name, 18, event)
 
-        if mode == "host_wait" and room_waiting:
+        if task_create is not None:
+            if task_create.done():
+                busy_msg = ""
+                try:
+                    data = task_create.result()
+                    room_waiting = str(data["room_id"])
+                    mode = "host_wait"
+                except asyncio.CancelledError:
+                    pass
+                except ApiError as e:
+                    err_msg = str(e)[:220]
+                    if "timed out" in err_msg.lower() or "127.0.0.1" in err_msg or "Connection" in err_msg:
+                        err_msg += f"  (API: {API_BASE_URL})"
+                except Exception as e:
+                    err_msg = str(e)[:220]
+                task_create = None
+
+        if task_join is not None:
+            if task_join.done():
+                busy_msg = ""
+                try:
+                    task_join.result()
+                    return GameSession(room_id=join_rid_pending, me=2)
+                except asyncio.CancelledError:
+                    pass
+                except ApiError as e:
+                    err_msg = str(e)[:220]
+                except Exception as e:
+                    err_msg = str(e)[:220]
+                task_join = None
+
+        if mode == "host_wait" and room_waiting and task_poll is None:
             poll_acc += ms / 1000.0
             if poll_acc >= 0.35:
                 poll_acc = 0.0
-                try:
-                    st = await api_get(f"/api/rooms/{room_waiting}/state")
-                    if st.get("p2_joined"):
-                        return GameSession(room_id=room_waiting, me=1)
-                except ApiError:
-                    err_msg = "Lost connection to server."
+                task_poll = asyncio.create_task(api_get(f"/api/rooms/{room_waiting}/state"))
+
+        if task_poll is not None and task_poll.done():
+            try:
+                st = task_poll.result()
+                if st.get("p2_joined"):
+                    return GameSession(room_id=room_waiting or "", me=1)
+            except asyncio.CancelledError:
+                pass
+            except ApiError:
+                err_msg = "Lost connection to server."
+            task_poll = None
 
         screen.fill(BG)
         y = 36
@@ -149,6 +200,9 @@ async def run_lobby(
             (SCREEN_W // 2 - 380, y),
         )
 
+        if busy_msg:
+            screen.blit(font_small.render(busy_msg, True, (160, 220, 255)), (SCREEN_W // 2 - 160, SCREEN_H // 2 - 20))
+
         if mode is None:
             _draw_button(screen, btn_host, "Host game (get room code)", font_small, btn_host.collidepoint(mx, my))
             _draw_button(screen, btn_join, "Join friend (nickname + room code)", font_small, btn_join.collidepoint(mx, my))
@@ -156,7 +210,14 @@ async def run_lobby(
             screen.blit(font_small.render("Your name (host):", True, (210, 215, 230)), (SCREEN_W // 2 - 200, 340))
             pygame.draw.rect(screen, (40, 44, 58), pygame.Rect(SCREEN_W // 2 - 200, 368, 400, 40), border_radius=6)
             screen.blit(font_small.render(host_name + "|", True, (245, 245, 250)), (SCREEN_W // 2 - 190, 376))
-            _draw_button(screen, btn_create, "Create & wait for friend", font_small, btn_create.collidepoint(mx, my))
+            dim = task_create is not None
+            _draw_button(
+                screen,
+                btn_create,
+                "Create & wait for friend",
+                font_small,
+                btn_create.collidepoint(mx, my) and not dim,
+            )
         elif mode == "host_wait" and room_waiting:
             screen.blit(font_small.render("Tell your friend this room code:", True, (210, 215, 230)), (SCREEN_W // 2 - 260, 340))
             rw = font.render(room_waiting, True, (255, 220, 120))
@@ -171,7 +232,8 @@ async def run_lobby(
             bn = (90, 140, 200) if join_focus == "name" else (45, 48, 62)
             pygame.draw.rect(screen, bn, rect_name, border_radius=6)
             screen.blit(font_small.render(join_name or "…", True, (245, 245, 250)), (SCREEN_W // 2 - 190, 438))
-            _draw_button(screen, btn_go, "Join game", font_small, btn_go.collidepoint(mx, my))
+            jdim = task_join is not None
+            _draw_button(screen, btn_go, "Join game", font_small, btn_go.collidepoint(mx, my) and not jdim)
 
         if err_msg:
             screen.blit(font_small.render(err_msg, True, (255, 140, 140)), (40, SCREEN_H - 56))

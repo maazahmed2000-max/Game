@@ -17,3 +17,5 @@ HIGHLIGHT = (255, 230, 120)
 
 # Multiplayer API (FastAPI server). For GitHub Pages builds, set this to your public https URL before running pygbag.
 API_BASE_URL = os.environ.get("GAME_API_URL", "http://127.0.0.1:8765").rstrip("/")
+# urllib timeout (seconds) for each request — keep low so a dead server does not freeze the UI long.
+REQUEST_TIMEOUT_S = 6

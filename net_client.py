@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
-from constants import API_BASE_URL
+from constants import API_BASE_URL, REQUEST_TIMEOUT_S
 
 
 class ApiError(Exception):
@@ -27,7 +27,7 @@ def _request_sync(method: str, path: str, body: Optional[Dict[str, Any]] = None)
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(_full_url(path), data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
