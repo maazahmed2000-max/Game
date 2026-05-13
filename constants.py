@@ -1,21 +1,21 @@
 """Screen and gameplay tuning — tweak here first."""
 
-import os
-
 TILE = 48
 COLS, ROWS = 14, 10
 SCREEN_W = 1180
 SCREEN_H = 720
 FPS = 60
 
-BG = (28, 32, 44)
-FLOOR = (58, 64, 82)
-WALL = (38, 42, 56)
-PLAYER1 = (220, 120, 90)
-PLAYER2 = (90, 160, 220)
-HIGHLIGHT = (255, 230, 120)
+BG = (24, 28, 38)
+FLOOR = (52, 58, 72)
+WALL = (36, 40, 52)
+LAB_TECH = (210, 222, 240)
+COWORKER_COAT = (188, 198, 218)
+HIGHLIGHT = (255, 228, 120)
 
-# Multiplayer API (FastAPI server). For GitHub Pages builds, set this to your public https URL before running pygbag.
-API_BASE_URL = os.environ.get("GAME_API_URL", "http://127.0.0.1:8765").rstrip("/")
-# urllib timeout (seconds) for each request — keep low so a dead server does not freeze the UI long.
-REQUEST_TIMEOUT_S = 6
+SHIFT_SECONDS = 180
+BUMP_TIME_PENALTY = 6.0
+BUMP_RADIUS = 0.72
+
+INVENTORY_WAIT_S = 2.6
+CHAMBER_RUN_S = 3.1

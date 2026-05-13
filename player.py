@@ -1,8 +1,8 @@
-"""Player movement on a grid (logic stays top-down; rendering is isometric)."""
+"""Lab tech movement on a grid (top-down logic, isometric view)."""
 
 from typing import List, Tuple
 
-from kitchen import Cell, walkable
+from lab import Cell, walkable
 
 
 class Player:
@@ -10,9 +10,13 @@ class Player:
         self.col = float(col)
         self.row = float(row)
         self.speed = 6.0
+        self.carrying_wafer = False
 
     def center_tile(self) -> Tuple[int, int]:
         return int(round(self.col)), int(round(self.row))
+
+    def drop_wafer(self) -> None:
+        self.carrying_wafer = False
 
     def update(
         self,

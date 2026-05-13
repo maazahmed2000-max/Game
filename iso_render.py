@@ -1,14 +1,14 @@
-"""Isometric-style floor tiles and extruded walls (pseudo-3D, Overcooked-like)."""
+"""Isometric-style floor tiles and extruded walls (pseudo-3D, lab floor)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import pygame
 
 from constants import COLS, ROWS, SCREEN_H, SCREEN_W
-from kitchen import Cell
+from lab import Cell
 
 
 Point = Tuple[float, float]
@@ -80,16 +80,18 @@ def cell_base_color(cell: Cell) -> Tuple[int, int, int]:
         return WALL
     if cell == Cell.FLOOR:
         return FLOOR
-    if cell == Cell.INGREDIENT_BIN:
-        return (72, 118, 78)
-    if cell == Cell.CHOP:
-        return (142, 118, 82)
-    if cell == Cell.STOVE:
-        return (148, 62, 62)
-    if cell == Cell.PLATE:
-        return (188, 188, 198)
-    if cell == Cell.SERVE:
-        return (78, 118, 168)
+    if cell == Cell.RECEIVING:
+        return (88, 110, 140)
+    if cell == Cell.PROBER_LOAD:
+        return (120, 100, 160)
+    if cell == Cell.PROBER_WAIT:
+        return (100, 90, 150)
+    if cell == Cell.TEST_BENCH:
+        return (70, 140, 130)
+    if cell == Cell.TEST_CHAMBER:
+        return (140, 90, 70)
+    if cell == Cell.FINISHED_RACK:
+        return (95, 130, 95)
     return FLOOR
 
 
@@ -136,10 +138,10 @@ def draw_players_iso(
     surf: pygame.Surface,
     view: IsoView,
     players: Sequence[Tuple[float, float, Tuple[int, int, int]]],
+    carries: Optional[Sequence[bool]] = None,
 ) -> None:
-    """players: (col, row, rgb) — sorted back-to-front."""
-    ordered = sorted(players, key=lambda p: p[0] + p[1])
-    for col, row, rgb in ordered:
+    ordered = sorted(enumerate(players), key=lambda t: t[1][0] + t[1][1])
+    for i, (col, row, rgb) in ordered:
         cx, cy = view.center(col, row)
         shadow_w, shadow_h = view.hw * 0.85, view.hh * 0.55
         pygame.draw.ellipse(
@@ -175,6 +177,13 @@ def draw_players_iso(
             int(head_r),
             2,
         )
+        if carries is not None and i < len(carries) and carries[i]:
+            pygame.draw.ellipse(
+                surf,
+                (210, 215, 225),
+                (int(cx - view.hw * 0.25), int(top + body_h * 0.35), int(view.hw * 0.5), int(view.hh * 0.45)),
+            )
+            pygame.draw.ellipse(surf, (90, 95, 110), (int(cx - view.hw * 0.25), int(top + body_h * 0.35), int(view.hw * 0.5), int(view.hh * 0.45)), 1)
 
 
 def draw_world_iso(
