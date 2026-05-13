@@ -23,10 +23,24 @@ py -m http.server 8000 --directory .\build\web
 
 Open `http://localhost:8000` (on your phone, use your PC’s LAN IP instead of `localhost`).
 
-## Put this on GitHub (first time)
+## Push to GitHub (you already have this folder)
 
-1. Install [GitHub CLI](https://cli.github.com/) if you do not have it (`winget install GitHub.cli`).
-2. In this folder, run **`.\complete_github.ps1`** (PowerShell). It opens a browser to log in if needed, then creates the repo and pushes.
-3. On GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+Your code is committed on branch **`main`** locally. If it is not on GitHub yet:
 
-If the default repo name is taken, edit `REPO_NAME` in `scripts\push_to_github.ps1` and run `.\complete_github.ps1` again (or run `.\scripts\push_to_github.ps1` after `gh auth login`).
+1. Open **GitHub Desktop** → **File → Add local repository** → choose `C:\Users\maaza\Documents\GitHub\Game` (or open it if it is already listed).
+2. Click **Publish repository** *or* **Push origin** (depending on whether GitHub already has an empty `Game` repo).
+3. If GitHub says the remote does not exist, create a **public** repo named **`Game`** on your account first, then set the remote in this folder:
+   `git remote set-url origin https://github.com/<YOUR_USERNAME>/Game.git`
+
+## Enable the playable web build (GitHub Pages)
+
+After the first successful push: **Settings → Pages → Build and deployment → Source: GitHub Actions**.  
+Wait for the **Publish web game** workflow, then open the **Pages** URL from the workflow run (often `https://<username>.github.io/Game/`).
+
+### Alternate: GitHub CLI
+
+From this folder: `gh auth login` then `git push -u origin main`, or run **`.\complete_github.ps1`** only if you still need to create the repo from scratch.
+
+If the default remote URL is wrong for your account, run:
+
+`git remote set-url origin https://github.com/<YOUR_USERNAME>/Game.git`

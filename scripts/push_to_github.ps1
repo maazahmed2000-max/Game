@@ -32,7 +32,7 @@ if ($remotes -contains "origin") {
 }
 
 # Change if this name is taken on your account
-$REPO_NAME = "coop-kitchen-wasm"
+$REPO_NAME = "Game"
 
 Write-Host "Creating GitHub repo '$REPO_NAME' and pushing..."
 $p2 = Start-Process -FilePath $gh -ArgumentList @(
