@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence, Tuple
 
@@ -10,9 +11,12 @@ import pygame
 if TYPE_CHECKING:
     from game_assets import GameAssets
 
+from game_assets import OPERATOR_HEIGHT_FACTOR, PROBER_WIDTH_FACTOR
+
 from constants import (
     CHAMBER_RUN_S,
     COLS,
+    DEBUG_DRAW_WALKABLE,
     FLOOR,
     INVENTORY_WAIT_S,
     PLAN_LINE,
@@ -20,7 +24,19 @@ from constants import (
     SCREEN_H,
     SCREEN_W,
 )
-from lab import Cell, all_station_tiles
+from lab import walkable
+from lab import (
+    Cell,
+    StationZone,
+    TestSpec,
+    all_station_tiles,
+    config_rack_zones,
+    mhu_zone,
+    prober_chuck_zones,
+    prober_station_zones,
+    prober_visual_center,
+    test_label,
+)
 
 Point = Tuple[float, float]
 
@@ -35,6 +51,15 @@ class IsoView:
 
     def center(self, col: float, row: float) -> Point:
         return (col - row) * self.hw + self.ox, (col + row) * self.hh + self.oy
+
+    def corners_at(self, col: float, row: float) -> List[Point]:
+        cx, cy = self.center(col, row)
+        return [
+            (cx - self.hw, cy),
+            (cx, cy - self.hh),
+            (cx + self.hw, cy),
+            (cx, cy + self.hh),
+        ]
 
     def corners_floor(self, col: int, row: int) -> List[Point]:
         cx, cy = self.center(float(col), float(row))
@@ -253,6 +278,144 @@ def draw_progress_above_tile(
     surf.blit(cap, (bx + bw // 2 - cap.get_width() // 2, by - cap.get_height() - 2))
 
 
+def draw_floating_label(
+    surf: pygame.Surface,
+    view: IsoView,
+    col: float,
+    row: float,
+    text: str,
+    font: pygame.font.Font,
+    *,
+    color: Tuple[int, int, int] = (255, 245, 200),
+    lift: float = 2.8,
+) -> None:
+    cx, cy = view.center(col, row)
+    cy -= view.hh * lift
+    label = font.render(text, True, color)
+    pad_x, pad_y = 6, 3
+    bx = int(cx - label.get_width() / 2 - pad_x)
+    by = int(cy - label.get_height() / 2 - pad_y)
+    bw = label.get_width() + pad_x * 2
+    bh = label.get_height() + pad_y * 2
+    pygame.draw.rect(surf, (20, 24, 32), (bx, by, bw, bh), border_radius=4)
+    pygame.draw.rect(surf, (100, 200, 170), (bx, by, bw, bh), 1, border_radius=4)
+    surf.blit(label, (int(cx - label.get_width() / 2), int(cy - label.get_height() / 2)))
+
+
+def draw_zone_hitbox(
+    surf: pygame.Surface,
+    view: IsoView,
+    zone: StationZone,
+    color: Tuple[int, int, int],
+    *,
+    active: bool = False,
+    show_radius: bool = False,
+) -> None:
+    pts = [(int(p[0]), int(p[1])) for p in view.corners_at(zone.col, zone.row)]
+    pygame.draw.polygon(surf, color, pts, 2)
+    if active:
+        pygame.draw.polygon(surf, (255, 228, 120), pts, 3)
+    if show_radius:
+        draw_zone_interact_radius(surf, view, zone, color)
+
+
+def draw_zone_interact_radius(
+    surf: pygame.Surface,
+    view: IsoView,
+    zone: StationZone,
+    color: Tuple[int, int, int],
+) -> None:
+    """Debug: interaction radius in grid space mapped to screen."""
+    ring: List[Tuple[int, int]] = []
+    for i in range(32):
+        ang = (i / 32) * math.tau
+        gc = zone.col + math.cos(ang) * zone.radius
+        gr = zone.row + math.sin(ang) * zone.radius
+        sx, sy = view.center(gc, gr)
+        ring.append((int(sx), int(sy)))
+    pygame.draw.lines(surf, color, True, ring, 1)
+    cx, cy = view.center(zone.col, zone.row)
+    pygame.draw.circle(surf, color, (int(cx), int(cy)), 3)
+
+
+def draw_walkable_debug(
+    surf: pygame.Surface,
+    view: IsoView,
+    cells: List[List[Cell]],
+    font: Optional[pygame.font.Font] = None,
+) -> None:
+    """Debug overlay: every walkable tile + colors by cell type."""
+    from lab import Cell as C, receiving_booths
+
+    tile_colors: dict[Cell, Tuple[int, int, int, int]] = {
+        C.FLOOR: (70, 130, 210, 42),
+        C.RECEIVING: (230, 190, 70, 75),
+        C.PROBER_LOAD: (190, 195, 220, 80),
+        C.PROBER_WAIT: (120, 180, 255, 85),
+        C.TEST_BENCH: (90, 210, 160, 80),
+        C.TEST_CHAMBER: (255, 150, 80, 80),
+        C.FINISHED_RACK: (120, 200, 120, 80),
+    }
+
+    layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+    for r in range(ROWS):
+        for c in range(COLS):
+            if not walkable(cells, c, r):
+                continue
+            cell = cells[r][c]
+            rgba = tile_colors.get(cell, (160, 160, 160, 40))
+            pts = [(int(p[0]), int(p[1])) for p in view.corners_at(float(c), float(r))]
+            pygame.draw.polygon(layer, rgba, pts)
+            pygame.draw.polygon(layer, (rgba[0], rgba[1], rgba[2], 120), pts, 1)
+    surf.blit(layer, (0, 0))
+
+    from lab import INTERACT_RADIUS
+
+    booth_color = (230, 190, 70)
+    for c, r in receiving_booths():
+        _draw_tile_interact_radius(surf, view, float(c), float(r), INTERACT_RADIUS, booth_color)
+
+    if font is not None:
+        for r in range(ROWS):
+            for c in range(COLS):
+                if not walkable(cells, c, r):
+                    continue
+                cx, cy = view.center(float(c), float(r))
+                tag = font.render(f"{c},{r}", True, (200, 205, 220))
+                surf.blit(tag, (int(cx - tag.get_width() / 2), int(cy - 6)))
+
+
+def _draw_tile_interact_radius(
+    surf: pygame.Surface,
+    view: IsoView,
+    col: float,
+    row: float,
+    radius: float,
+    color: Tuple[int, int, int],
+) -> None:
+    ring: List[Tuple[int, int]] = []
+    for i in range(28):
+        ang = (i / 28) * math.tau
+        sx, sy = view.center(col + math.cos(ang) * radius, row + math.sin(ang) * radius)
+        ring.append((int(sx), int(sy)))
+    pygame.draw.lines(surf, color, True, ring, 1)
+
+
+def draw_debug_legend(
+    surf: pygame.Surface,
+    font: pygame.font.Font,
+) -> None:
+    lines = [
+        "DEBUG: blue=walkable floor  gold=receive  cyan=MHU",
+        "green=config  orange=test  gray=load  rings=interact radius",
+    ]
+    y = SCREEN_H - 72
+    for line in lines:
+        t = font.render(line, True, (180, 190, 210))
+        surf.blit(t, (12, y))
+        y += 16
+
+
 def _blit_operator(
     surf: pygame.Surface,
     view: IsoView,
@@ -266,7 +429,7 @@ def _blit_operator(
     carrying: bool,
 ) -> None:
     cx, cy = view.center(col, row)
-    sprite_h = int(view.hh * 4.6)
+    sprite_h = int(view.hh * OPERATOR_HEIGHT_FACTOR)
     sprite = assets.operator_frame(
         operator,
         facing_right=facing_right,
@@ -361,40 +524,138 @@ def draw_players_iso(
             pygame.draw.ellipse(surf, (90, 95, 110), (int(cx - view.hw * 0.25), int(top + body_h * 0.35), int(view.hw * 0.5), int(view.hh * 0.45)), 1)
 
 
+def draw_objective_arrow(
+    surf: pygame.Surface,
+    view: IsoView,
+    from_col: float,
+    from_row: float,
+    to_col: float,
+    to_row: float,
+    *,
+    pulse_t: float,
+) -> None:
+    """Arrow from the player toward the active objective tile."""
+    fx, fy = view.center(from_col, from_row)
+    fy -= view.hh * 0.35
+    tx, ty = view.center(float(to_col), float(to_row))
+    ty -= view.hh * 0.45
+
+    dx, dy = tx - fx, ty - fy
+    dist = math.hypot(dx, dy)
+    if dist < 28:
+        return
+
+    ux, uy = dx / dist, dy / dist
+    along = min(dist * 0.55, dist - 36)
+    ax, ay = fx + ux * along, fy + uy * along
+
+    pulse = 0.5 + 0.5 * math.sin(pulse_t * 4.5)
+    size = 11 + pulse * 5
+    px, py = -uy, ux
+    tip = (ax + ux * size * 1.2, ay + uy * size * 1.2)
+    back = (ax - ux * size * 0.55, ay - uy * size * 0.55)
+    left = (back[0] + px * size * 0.55, back[1] + py * size * 0.55)
+    right = (back[0] - px * size * 0.55, back[1] - py * size * 0.55)
+    pts = [tip, left, right]
+
+    glow = pygame.Surface((int(size * 4), int(size * 4)), pygame.SRCALPHA)
+    pygame.draw.polygon(glow, (255, 210, 60, 70), [(p[0] - ax + size * 2, p[1] - ay + size * 2) for p in pts])
+    surf.blit(glow, (int(ax - size * 2), int(ay - size * 2)))
+    pygame.draw.polygon(surf, (255, 232, 110), pts)
+    pygame.draw.polygon(surf, (230, 150, 40), pts, 2)
+
+    # Short guide line toward the goal
+    lx, ly = fx + ux * 18, fy + uy * 18
+    pygame.draw.line(surf, (255, 220, 100), (int(lx), int(ly)), (int(ax), int(ay)), 3)
+
+
 def _draw_station_markers_art(
     surf: pygame.Surface,
     view: IsoView,
     cells: List[List[Cell]],
     hl_set: set[Tuple[int, int]],
     assets: "GameAssets",
+    *,
+    debug_font: Optional[pygame.font.Font] = None,
 ) -> None:
     from lab import Cell as C
-
-    prober_tiles = all_station_tiles(cells, C.PROBER_LOAD) + all_station_tiles(cells, C.PROBER_WAIT)
-    if prober_tiles:
-        sx = sum(view.center(c, r)[0] for c, r in prober_tiles) / len(prober_tiles)
-        sy = sum(view.center(c, r)[1] for c, r in prober_tiles) / len(prober_tiles)
-        assets.draw_prober_cluster(surf, (sx, sy), view.hw * 7.5)
 
     for c, r in all_station_tiles(cells, C.RECEIVING):
         poly = view.corners_floor(c, r)
         if (c, r) in hl_set:
             pygame.draw.polygon(surf, (255, 228, 120), poly, 3)
 
-    for kind, color in (
-        (C.TEST_BENCH, (100, 200, 170)),
-        (C.TEST_CHAMBER, (255, 160, 90)),
-        (C.FINISHED_RACK, (140, 200, 140)),
-    ):
-        for c, r in all_station_tiles(cells, kind):
-            poly = view.corners_floor(c, r)
-            pygame.draw.polygon(surf, color, poly, 2)
-            if (c, r) in hl_set:
-                pygame.draw.polygon(surf, (255, 228, 120), poly, 3)
+    zone_colors = {
+        Cell.PROBER_WAIT: (120, 180, 255),
+        Cell.TEST_BENCH: (100, 200, 170),
+        Cell.TEST_CHAMBER: (255, 160, 90),
+        Cell.PROBER_LOAD: (180, 190, 210),
+    }
+    show_debug = DEBUG_DRAW_WALKABLE
+    for z in prober_station_zones():
+        ic, ir = int(round(z.col)), int(round(z.row))
+        active = (ic, ir) in hl_set
+        draw_zone_hitbox(surf, view, z, zone_colors[z.step], active=active, show_radius=show_debug)
+        if show_debug and debug_font is not None:
+            cx, cy = view.center(z.col, z.row)
+            tag = debug_font.render(z.zone_id, True, zone_colors[z.step])
+            surf.blit(tag, (int(cx - tag.get_width() / 2), int(cy - view.hh * 3.2)))
+
+    for c, r in all_station_tiles(cells, C.FINISHED_RACK):
+        poly = view.corners_floor(c, r)
+        pygame.draw.polygon(surf, (140, 200, 140), poly, 2)
+        if (c, r) in hl_set:
+            pygame.draw.polygon(surf, (255, 228, 120), poly, 3)
+        if show_debug:
+            from lab import INTERACT_RADIUS
+
+            _draw_tile_interact_radius(surf, view, float(c), float(r), INTERACT_RADIUS, (140, 200, 140))
 
     for c, r in hl_set:
         if cells[r][c] == C.FLOOR:
             pygame.draw.polygon(surf, (255, 228, 120), view.corners_floor(c, r), 2)
+
+
+def draw_prober_and_players_depth_sorted(
+    surf: pygame.Surface,
+    view: IsoView,
+    assets: "GameAssets",
+    players: Sequence[Tuple[float, float, Tuple[int, int, int]]],
+    carries: Optional[Sequence[bool]] = None,
+    *,
+    moving: Optional[Sequence[bool]] = None,
+    facings: Optional[Sequence[bool]] = None,
+    operators: Optional[Sequence[int]] = None,
+) -> None:
+    """Draw operator vs prober in depth order (iso depth = col + row)."""
+    pc, pr = prober_visual_center()
+    prober_depth = pc + pr
+    cx, cy = view.center(pc, pr)
+    cluster_w = view.hw * PROBER_WIDTH_FACTOR
+
+    player_depth = players[0][0] + players[0][1] if players else prober_depth
+
+    def _draw_prober() -> None:
+        assets.draw_prober_cluster(surf, (cx, cy), cluster_w)
+
+    def _draw_players() -> None:
+        draw_players_iso(
+            surf,
+            view,
+            players,
+            carries,
+            assets=assets,
+            moving=moving,
+            facings=facings,
+            operators=operators,
+        )
+
+    if player_depth < prober_depth:
+        _draw_players()
+        _draw_prober()
+    else:
+        _draw_prober()
+        _draw_players()
 
 
 def draw_world_iso(
@@ -409,40 +670,80 @@ def draw_world_iso(
     inv_prog: float = 0.0,
     ch_prog: float = 0.0,
     assets: Optional["GameAssets"] = None,
+    objective_arrow: Optional[Tuple[float, float, int, int, float]] = None,
+    rack_test: Optional[TestSpec] = None,
+    bench_selection: Optional[TestSpec] = None,
 ) -> None:
     hl_set = set(highlights)
     pending = set(pending_wafer_tiles or [])
 
     if assets is not None:
         assets.draw_background(surf)
-        _draw_station_markers_art(surf, view, cells, hl_set, assets)
+        if DEBUG_DRAW_WALKABLE:
+            draw_walkable_debug(surf, view, cells, world_progress_font)
+        _draw_station_markers_art(
+            surf,
+            view,
+            cells,
+            hl_set,
+            assets,
+            debug_font=world_progress_font if DEBUG_DRAW_WALKABLE else None,
+        )
+        if DEBUG_DRAW_WALKABLE and world_progress_font is not None:
+            draw_debug_legend(surf, world_progress_font)
         for c, r in pending:
             draw_pending_wafer(surf, view, c, r, assets)
+        if objective_arrow is not None:
+            pcol, prow, tcol, trow, pulse_t = objective_arrow
+            draw_objective_arrow(surf, view, pcol, prow, tcol, trow, pulse_t=pulse_t)
+        if rack_test is not None and world_progress_font is not None:
+            for z in config_rack_zones():
+                if (
+                    z.zone_id == "rack_r"
+                    and bench_selection is not None
+                    and expected_step == Cell.TEST_BENCH
+                ):
+                    text = f"Dial: {test_label(bench_selection)}"
+                    color = (160, 230, 200)
+                else:
+                    text = f"Test: {test_label(rack_test)}"
+                    color = (255, 245, 200)
+                draw_floating_label(
+                    surf,
+                    view,
+                    z.col,
+                    z.row,
+                    text,
+                    world_progress_font,
+                    color=color,
+                    lift=4.5,
+                )
+
         if world_progress_font is not None:
             if expected_step == Cell.PROBER_WAIT:
-                for c, r in all_station_tiles(cells, Cell.PROBER_WAIT):
-                    draw_progress_above_tile(
-                        surf,
-                        view,
-                        c,
-                        r,
-                        inv_prog,
-                        INVENTORY_WAIT_S,
-                        (110, 185, 255),
-                        "Inventory",
-                        world_progress_font,
-                    )
+                z = mhu_zone()
+                draw_progress_above_tile(
+                    surf,
+                    view,
+                    int(round(z.col)),
+                    int(round(z.row)),
+                    inv_prog,
+                    INVENTORY_WAIT_S,
+                    (110, 185, 255),
+                    "MHU inventory",
+                    world_progress_font,
+                )
             if expected_step == Cell.TEST_CHAMBER:
-                for c, r in all_station_tiles(cells, Cell.TEST_CHAMBER):
+                for z in prober_chuck_zones():
                     draw_progress_above_tile(
                         surf,
                         view,
-                        c,
-                        r,
+                        int(round(z.col)),
+                        int(round(z.row)),
                         ch_prog,
                         CHAMBER_RUN_S,
                         (255, 150, 90),
-                        "Testing",
+                        "Prober test",
                         world_progress_font,
                     )
         return

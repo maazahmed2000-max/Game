@@ -1,9 +1,17 @@
 """Lab tech movement on a grid (top-down logic, isometric view)."""
 
+import math
 from typing import List, Tuple
 
 from lab import Cell, walkable
 
+
+def screen_input_to_grid(dx: float, dy: float) -> Tuple[float, float]:
+    """Map screen WASD / stick input to isometric grid axes.
+
+    S/W move down/up on screen (both col and row), A/D move left/right.
+    """
+    return dx + dy, dy - dx
 
 class Player:
     def __init__(self, col: float, row: float) -> None:
@@ -30,9 +38,11 @@ class Player:
             return
         if dx != 0:
             self.facing_right = dx > 0
-        length = (dx * dx + dy * dy) ** 0.5
-        nx = dx / length
-        ny = dy / length
+        gx, gy = screen_input_to_grid(dx, dy)
+        length = math.hypot(gx, gy)
+        if length == 0:
+            return
+        nx, ny = gx / length, gy / length
         step = self.speed * dt
         ncol = self.col + nx * step
         nrow = self.row + ny * step

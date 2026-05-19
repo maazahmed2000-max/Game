@@ -25,16 +25,19 @@ from constants import (
     SPAWN_MIN_S,
 )
 from game_assets import GameAssets, make_iso_view_for_background
-from iso_render import draw_players_iso, draw_world_iso
+from iso_render import draw_prober_and_players_depth_sorted, draw_world_iso
 from lab import (
     RECIPE_WAFER,
     TEST_CYCLE,
     Cell,
     WaferOrder,
     default_map,
+    find_walkable_spawn,
+    player_near_step,
+    prober_station_zones,
     random_spawn_booth,
     random_test,
-    station_at,
+    step_destination,
     test_label,
 )
 from player import Player
@@ -79,8 +82,8 @@ async def run_menu(screen: pygame.Surface, clock: pygame.time.Clock, f: pygame.f
         t = f.render("PSI Quantum — wafer test shift", True, (238, 242, 252))
         screen.blit(t, (SCREEN_W // 2 - t.get_width() // 2, 80))
         lines = [
-            "Lab coat tech: pick up each lot at its marked receiving booth, load the prober, wait for cassette inventory,",
-            "set the correct test (E, O, EO, Oband, Cband, Other), run the chamber, rack finished lots.",
+            "Receive at STORAGE, load the prober chuck, run MHU inventory at center, set test on side racks,",
+            "probe on the station head, then rack finished lots.",
             "New wafer lots arrive on a random schedule — watch the HUD and the glowing booth for the next pickup.",
         ]
         y = 140
@@ -114,7 +117,8 @@ async def run_shift(
     f_ui, f_small, f_btn = fonts
     f_world = font(14)
     cells = default_map()
-    player = Player(14.0, 6.0)
+    spawn_col, spawn_row = find_walkable_spawn(cells)
+    player = Player(spawn_col, spawn_row)
     orders: List[WaferOrder] = []
     next_spawn = random.uniform(SPAWN_MIN_S, SPAWN_MAX_S)
     shift_left = float(SHIFT_SECONDS)
@@ -139,9 +143,9 @@ async def run_shift(
                 running = False
             elif event.type == pygame.KEYDOWN and orders:
                 exp = orders[0].next_expected()
-                pc, pr = player.center_tile()
-                st = station_at(cells, pc, pr)
-                if exp == Cell.TEST_BENCH and st == Cell.TEST_BENCH:
+                if exp == Cell.TEST_BENCH and player_near_step(
+                    cells, player.col, player.row, orders[0], Cell.TEST_BENCH
+                ):
                     if event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_COMMA):
                         dial_i = (dial_i - 1) % len(TEST_CYCLE)
                     elif event.key in (pygame.K_RIGHT, pygame.K_d, pygame.K_PERIOD):
@@ -163,10 +167,9 @@ async def run_shift(
             o = orders[0]
             exp = o.next_expected()
             exp_for_bar = exp
-            pc, pr = player.center_tile()
-            st = station_at(cells, pc, pr)
+            near_step = player_near_step(cells, player.col, player.row, o, exp) if exp else False
 
-            if exp == Cell.PROBER_WAIT and st == Cell.PROBER_WAIT:
+            if exp == Cell.PROBER_WAIT and near_step:
                 inv_prog += dt
                 if inv_prog >= INVENTORY_WAIT_S:
                     o.force_advance(Cell.PROBER_WAIT)
@@ -174,7 +177,7 @@ async def run_shift(
             else:
                 inv_prog = 0.0
 
-            if exp == Cell.TEST_CHAMBER and st == Cell.TEST_CHAMBER:
+            if exp == Cell.TEST_CHAMBER and near_step:
                 ch_prog += dt
                 if ch_prog >= CHAMBER_RUN_S:
                     o.force_advance(Cell.TEST_CHAMBER)
@@ -183,22 +186,21 @@ async def run_shift(
                 ch_prog = 0.0
 
             if pulse and interact_cd <= 0:
-                bx, by = o.spawn_booth
-                if exp == Cell.RECEIVING and st == Cell.RECEIVING and (pc, pr) == (bx, by) and not player.carrying_wafer:
+                if exp == Cell.RECEIVING and near_step and not player.carrying_wafer:
                     if o.apply_station(Cell.RECEIVING):
                         player.carrying_wafer = True
                         interact_cd = 0.22
-                elif exp == Cell.PROBER_LOAD and st == Cell.PROBER_LOAD and player.carrying_wafer:
+                elif exp == Cell.PROBER_LOAD and near_step and player.carrying_wafer:
                     if o.apply_station(Cell.PROBER_LOAD):
                         interact_cd = 0.22
-                elif exp == Cell.TEST_BENCH and st == Cell.TEST_BENCH:
+                elif exp == Cell.TEST_BENCH and near_step:
                     if TEST_CYCLE[dial_i] == o.required:
                         if o.apply_station(Cell.TEST_BENCH):
                             interact_cd = 0.22
                     else:
                         shift_left -= 2.0
                         interact_cd = 0.35
-                elif exp == Cell.FINISHED_RACK and st == Cell.FINISHED_RACK and player.carrying_wafer:
+                elif exp == Cell.FINISHED_RACK and near_step and player.carrying_wafer:
                     if o.apply_station(Cell.FINISHED_RACK):
                         player.carrying_wafer = False
                         wafers_done += 1
@@ -224,6 +226,24 @@ async def run_shift(
         if orders and orders[0].next_expected() == Cell.RECEIVING and not player.carrying_wafer:
             pending_wafers.append(orders[0].spawn_booth)
 
+        objective_arrow = None
+        if orders:
+            exp_now = orders[0].next_expected()
+            if exp_now in (Cell.PROBER_WAIT, Cell.PROBER_LOAD, Cell.TEST_BENCH, Cell.TEST_CHAMBER):
+                for z in prober_station_zones():
+                    if z.step == exp_now:
+                        hl.append((int(round(z.col)), int(round(z.row))))
+            target = step_destination(cells, orders[0], carrying=player.carrying_wafer)
+            if target is not None:
+                hl.append(target)
+                exp_now = orders[0].next_expected()
+                if exp_now and not player_near_step(cells, player.col, player.row, orders[0], exp_now):
+                    pulse_t = pygame.time.get_ticks() / 1000.0
+                    objective_arrow = (player.col, player.row, target[0], target[1], pulse_t)
+
+        rack_test = orders[0].required if orders else None
+        bench_sel = TEST_CYCLE[dial_i] if orders and orders[0].next_expected() == Cell.TEST_BENCH else None
+
         draw_world_iso(
             screen,
             view,
@@ -235,13 +255,16 @@ async def run_shift(
             inv_prog=inv_prog,
             ch_prog=ch_prog,
             assets=assets,
+            objective_arrow=objective_arrow,
+            rack_test=rack_test,
+            bench_selection=bench_sel,
         )
-        draw_players_iso(
+        draw_prober_and_players_depth_sorted(
             screen,
             view,
+            assets,
             [(player.col, player.row, LAB_TECH)],
             (player.carrying_wafer,),
-            assets=assets,
             moving=(player_moving,),
             facings=(player.facing_right,),
             operators=(0,),
@@ -259,23 +282,22 @@ async def run_shift(
             screen.blit(f_small.render(o.progress_text(), True, (255, 220, 170)), (12, hud_y))
             hud_y += 26
             exp = o.next_expected()
-            pc2, pr2 = player.center_tile()
-            st = station_at(cells, pc2, pr2)
-            if exp == Cell.PROBER_WAIT and st == Cell.PROBER_WAIT:
+            near = player_near_step(cells, player.col, player.row, o, exp) if exp else False
+            if exp == Cell.PROBER_WAIT and near:
                 w = int((SCREEN_W - 80) * min(1.0, inv_prog / INVENTORY_WAIT_S))
                 pygame.draw.rect(screen, (50, 55, 70), (40, hud_y, SCREEN_W - 80, 14), border_radius=4)
                 pygame.draw.rect(screen, (120, 180, 255), (40, hud_y, max(4, w), 14), border_radius=4)
-                screen.blit(f_small.render("Prober inventory / cassette map…", True, (180, 200, 230)), (48, hud_y - 22))
-            elif exp == Cell.TEST_CHAMBER and st == Cell.TEST_CHAMBER:
+                screen.blit(f_small.render("MHU inventory / cassette map…", True, (180, 200, 230)), (48, hud_y - 22))
+            elif exp == Cell.TEST_CHAMBER and near:
                 w = int((SCREEN_W - 80) * min(1.0, ch_prog / CHAMBER_RUN_S))
                 pygame.draw.rect(screen, (50, 55, 70), (40, hud_y, SCREEN_W - 80, 14), border_radius=4)
                 pygame.draw.rect(screen, (255, 160, 90), (40, hud_y, max(4, w), 14), border_radius=4)
-                screen.blit(f_small.render("Wafer under test…", True, (230, 190, 160)), (48, hud_y - 22))
-            elif exp == Cell.TEST_BENCH and st == Cell.TEST_BENCH:
+                screen.blit(f_small.render("Wafer probing on station head…", True, (230, 190, 160)), (48, hud_y - 22))
+            elif exp == Cell.TEST_BENCH and near:
                 cur = test_label(TEST_CYCLE[dial_i])
                 screen.blit(
                     f_small.render(
-                        f"Test bench: [{cur}]   ←/→ or A/D to change   Space when it matches {test_label(o.required)}",
+                        f"Config rack: [{cur}]   ←/→ or A/D to change   Space when it matches {test_label(o.required)}",
                         True,
                         (160, 230, 200),
                     ),

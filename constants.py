@@ -3,7 +3,7 @@
 TILE = 48
 # Wide floor plan (corridor + bays), blueprint-style
 COLS = 28
-ROWS = 12
+ROWS = 20
 SCREEN_W = 1280
 SCREEN_H = 760
 FPS = 60
@@ -22,3 +22,6 @@ CHAMBER_RUN_S = 3.1
 # New wafer lots every 10–15 s (randomized)
 SPAWN_MIN_S = 10.0
 SPAWN_MAX_S = 15.0
+
+# Overlay walkable tiles + station hitbox radii (toggle off for normal play).
+DEBUG_DRAW_WALKABLE = True
