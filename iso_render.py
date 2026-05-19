@@ -1,11 +1,14 @@
-"""Isometric floor (blueprint-style), extruded walls, 3D-style station props, world UI."""
+"""Isometric floor, lab art overlays, operator sprites, world UI."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence, Tuple
 
 import pygame
+
+if TYPE_CHECKING:
+    from game_assets import GameAssets
 
 from constants import (
     CHAMBER_RUN_S,
@@ -208,9 +211,19 @@ def draw_station_3d(surf: pygame.Surface, view: IsoView, col: int, row: int, cel
             _box_prism(surf, view, col, row + dy * 0.5, 0.85 - i * 0.05, 0.85 - i * 0.05, 0.18, (95, 120, 95), (72, 92, 72), (82, 102, 82))
 
 
-def draw_pending_wafer(surf: pygame.Surface, view: IsoView, col: int, row: int) -> None:
+def draw_pending_wafer(
+    surf: pygame.Surface,
+    view: IsoView,
+    col: int,
+    row: int,
+    assets: Optional["GameAssets"] = None,
+) -> None:
     cx, cy = view.center(float(col), float(row))
     cy -= view.hh * 0.15
+    if assets is not None and assets.wafer is not None:
+        icon = assets.wafer_icon(int(view.hh * 1.1))
+        surf.blit(icon, (int(cx - icon.get_width() / 2), int(cy - icon.get_height() * 0.85)))
+        return
     pygame.draw.ellipse(surf, (215, 220, 230), (int(cx - view.hw * 0.28), int(cy - view.hh * 0.12), int(view.hw * 0.56), int(view.hh * 0.38)))
     pygame.draw.ellipse(surf, (120, 125, 140), (int(cx - view.hw * 0.28), int(cy - view.hh * 0.12), int(view.hw * 0.56), int(view.hh * 0.38)), 1)
     pygame.draw.circle(surf, (255, 230, 140), (int(cx), int(cy - view.hh * 0.35)), int(view.hh * 0.22))
@@ -240,12 +253,68 @@ def draw_progress_above_tile(
     surf.blit(cap, (bx + bw // 2 - cap.get_width() // 2, by - cap.get_height() - 2))
 
 
+def _blit_operator(
+    surf: pygame.Surface,
+    view: IsoView,
+    assets: "GameAssets",
+    col: float,
+    row: float,
+    operator: int,
+    *,
+    facing_right: bool,
+    moving: bool,
+    carrying: bool,
+) -> None:
+    cx, cy = view.center(col, row)
+    sprite_h = int(view.hh * 4.6)
+    sprite = assets.operator_frame(
+        operator,
+        facing_right=facing_right,
+        moving=moving,
+        carrying=carrying,
+        sprite_h=sprite_h,
+    )
+    shadow_w, shadow_h = view.hw * 0.85, view.hh * 0.55
+    pygame.draw.ellipse(
+        surf,
+        (24, 26, 34),
+        (int(cx - shadow_w), int(cy - shadow_h * 0.2), int(2 * shadow_w), int(2 * shadow_h)),
+    )
+    foot_y = cy + view.hh * 0.15
+    surf.blit(sprite, (int(cx - sprite.get_width() / 2), int(foot_y - sprite.get_height())))
+
+
 def draw_players_iso(
     surf: pygame.Surface,
     view: IsoView,
     players: Sequence[Tuple[float, float, Tuple[int, int, int]]],
     carries: Optional[Sequence[bool]] = None,
+    *,
+    assets: Optional["GameAssets"] = None,
+    moving: Optional[Sequence[bool]] = None,
+    facings: Optional[Sequence[bool]] = None,
+    operators: Optional[Sequence[int]] = None,
 ) -> None:
+    if assets is not None:
+        ordered = sorted(enumerate(players), key=lambda t: t[1][0] + t[1][1])
+        for i, (col, row, _rgb) in ordered:
+            carry = carries is not None and i < len(carries) and carries[i]
+            mv = moving is not None and i < len(moving) and moving[i]
+            face = facings[i] if facings is not None and i < len(facings) else True
+            op = operators[i] if operators is not None and i < len(operators) else 0
+            _blit_operator(
+                surf,
+                view,
+                assets,
+                col,
+                row,
+                op,
+                facing_right=face,
+                moving=mv,
+                carrying=carry,
+            )
+        return
+
     ordered = sorted(enumerate(players), key=lambda t: t[1][0] + t[1][1])
     for i, (col, row, rgb) in ordered:
         cx, cy = view.center(col, row)
@@ -292,6 +361,42 @@ def draw_players_iso(
             pygame.draw.ellipse(surf, (90, 95, 110), (int(cx - view.hw * 0.25), int(top + body_h * 0.35), int(view.hw * 0.5), int(view.hh * 0.45)), 1)
 
 
+def _draw_station_markers_art(
+    surf: pygame.Surface,
+    view: IsoView,
+    cells: List[List[Cell]],
+    hl_set: set[Tuple[int, int]],
+    assets: "GameAssets",
+) -> None:
+    from lab import Cell as C
+
+    prober_tiles = all_station_tiles(cells, C.PROBER_LOAD) + all_station_tiles(cells, C.PROBER_WAIT)
+    if prober_tiles:
+        sx = sum(view.center(c, r)[0] for c, r in prober_tiles) / len(prober_tiles)
+        sy = sum(view.center(c, r)[1] for c, r in prober_tiles) / len(prober_tiles)
+        assets.draw_prober_cluster(surf, (sx, sy), view.hw * 7.5)
+
+    for c, r in all_station_tiles(cells, C.RECEIVING):
+        poly = view.corners_floor(c, r)
+        if (c, r) in hl_set:
+            pygame.draw.polygon(surf, (255, 228, 120), poly, 3)
+
+    for kind, color in (
+        (C.TEST_BENCH, (100, 200, 170)),
+        (C.TEST_CHAMBER, (255, 160, 90)),
+        (C.FINISHED_RACK, (140, 200, 140)),
+    ):
+        for c, r in all_station_tiles(cells, kind):
+            poly = view.corners_floor(c, r)
+            pygame.draw.polygon(surf, color, poly, 2)
+            if (c, r) in hl_set:
+                pygame.draw.polygon(surf, (255, 228, 120), poly, 3)
+
+    for c, r in hl_set:
+        if cells[r][c] == C.FLOOR:
+            pygame.draw.polygon(surf, (255, 228, 120), view.corners_floor(c, r), 2)
+
+
 def draw_world_iso(
     surf: pygame.Surface,
     view: IsoView,
@@ -303,9 +408,44 @@ def draw_world_iso(
     expected_step: Optional[Cell] = None,
     inv_prog: float = 0.0,
     ch_prog: float = 0.0,
+    assets: Optional["GameAssets"] = None,
 ) -> None:
     hl_set = set(highlights)
     pending = set(pending_wafer_tiles or [])
+
+    if assets is not None:
+        assets.draw_background(surf)
+        _draw_station_markers_art(surf, view, cells, hl_set, assets)
+        for c, r in pending:
+            draw_pending_wafer(surf, view, c, r, assets)
+        if world_progress_font is not None:
+            if expected_step == Cell.PROBER_WAIT:
+                for c, r in all_station_tiles(cells, Cell.PROBER_WAIT):
+                    draw_progress_above_tile(
+                        surf,
+                        view,
+                        c,
+                        r,
+                        inv_prog,
+                        INVENTORY_WAIT_S,
+                        (110, 185, 255),
+                        "Inventory",
+                        world_progress_font,
+                    )
+            if expected_step == Cell.TEST_CHAMBER:
+                for c, r in all_station_tiles(cells, Cell.TEST_CHAMBER):
+                    draw_progress_above_tile(
+                        surf,
+                        view,
+                        c,
+                        r,
+                        ch_prog,
+                        CHAMBER_RUN_S,
+                        (255, 150, 90),
+                        "Testing",
+                        world_progress_font,
+                    )
+        return
 
     for depth in range(COLS + ROWS - 1):
         for c in range(COLS):
@@ -333,7 +473,7 @@ def draw_world_iso(
             if not (0 <= r < ROWS):
                 continue
             if (c, r) in pending:
-                draw_pending_wafer(surf, view, c, r)
+                draw_pending_wafer(surf, view, c, r, assets)
 
     if world_progress_font is not None:
         if expected_step == Cell.PROBER_WAIT:

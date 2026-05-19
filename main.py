@@ -24,7 +24,8 @@ from constants import (
     SPAWN_MAX_S,
     SPAWN_MIN_S,
 )
-from iso_render import draw_players_iso, draw_world_iso, make_iso_view
+from game_assets import GameAssets, make_iso_view_for_background
+from iso_render import draw_players_iso, draw_world_iso
 from lab import (
     RECIPE_WAFER,
     TEST_CYCLE,
@@ -108,6 +109,7 @@ async def run_shift(
     view,
     sticks: SoloTouch,
     fonts: tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font],
+    assets: GameAssets,
 ) -> None:
     f_ui, f_small, f_btn = fonts
     f_world = font(14)
@@ -154,6 +156,7 @@ async def run_shift(
         last_space, pulse = _pulse_space(keys, last_space, tap)
 
         player.update(cells, dx, dy, dt)
+        player_moving = dx != 0 or dy != 0
 
         exp_for_bar: Optional[Cell] = None
         if orders:
@@ -211,7 +214,7 @@ async def run_shift(
         if shift_left <= 0:
             running = False
 
-        screen.fill(BG)
+        screen.fill(BG if assets.background is None else (18, 20, 26))
         pc, pr = player.center_tile()
         hl: List[tuple[int, int]] = [(pc, pr)]
         if orders and orders[0].next_expected() == Cell.RECEIVING and not player.carrying_wafer:
@@ -231,8 +234,18 @@ async def run_shift(
             expected_step=exp_for_bar,
             inv_prog=inv_prog,
             ch_prog=ch_prog,
+            assets=assets,
         )
-        draw_players_iso(screen, view, [(player.col, player.row, LAB_TECH)], (player.carrying_wafer,))
+        draw_players_iso(
+            screen,
+            view,
+            [(player.col, player.row, LAB_TECH)],
+            (player.carrying_wafer,),
+            assets=assets,
+            moving=(player_moving,),
+            facings=(player.facing_right,),
+            operators=(0,),
+        )
         sticks.draw(screen, f_btn)
 
         hud_y = 8
@@ -297,7 +310,9 @@ async def main() -> None:
     pygame.display.set_caption("PSI Quantum — wafer lab")
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
     clock = pygame.time.Clock()
-    view = make_iso_view()
+    assets = GameAssets()
+    assets.load()
+    view = make_iso_view_for_background(assets)
     sticks = SoloTouch(SCREEN_W, SCREEN_H)
     f_ui = font(22)
     f_small = font(17)
@@ -307,7 +322,7 @@ async def main() -> None:
         choice = await run_menu(screen, clock, f_ui, f_small)
         if choice == "quit":
             break
-        await run_shift(screen, clock, view, sticks, (f_ui, f_small, f_btn))
+        await run_shift(screen, clock, view, sticks, (f_ui, f_small, f_btn), assets)
 
     pygame.quit()
 

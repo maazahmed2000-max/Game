@@ -11,6 +11,7 @@ class Player:
         self.row = float(row)
         self.speed = 6.0
         self.carrying_wafer = False
+        self.facing_right = True
 
     def center_tile(self) -> Tuple[int, int]:
         return int(round(self.col)), int(round(self.row))
@@ -27,6 +28,8 @@ class Player:
     ) -> None:
         if dx == 0 and dy == 0:
             return
+        if dx != 0:
+            self.facing_right = dx > 0
         length = (dx * dx + dy * dy) ** 0.5
         nx = dx / length
         ny = dy / length
