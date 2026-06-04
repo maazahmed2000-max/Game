@@ -43,7 +43,6 @@ class SoloTouch:
     screen_h: int
     margin: float = 22.0
     radius: float = 78.0
-    display: object | None = None
     stick: StickZone = field(init=False)
     use_rect: pygame.Rect = field(init=False)
     _touch: Dict[int, Tuple[float, float]] = field(default_factory=dict)
@@ -67,17 +66,6 @@ class SoloTouch:
         uw, uh = 100, 48
         self.use_rect = pygame.Rect(int(cx + r + m), int(cy - uh * 0.5), uw, uh)
 
-    def _pointer_pos(self, event: pygame.event.Event) -> tuple[float, float]:
-        scaler = getattr(self.display, "scaler", None) if self.display is not None else None
-        if event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
-            if scaler is not None:
-                return scaler.finger_to_logical(event.x, event.y)
-            return event.x * self.screen_w, event.y * self.screen_h
-        from display import logical_mouse_pos
-
-        lx, ly = logical_mouse_pos(event.pos)
-        return float(lx), float(ly)
-
     def handle_event(self, event: pygame.event.Event, *, ignore_mouse: bool = False) -> None:
         if ignore_mouse and event.type in (
             pygame.MOUSEBUTTONDOWN,
@@ -86,23 +74,21 @@ class SoloTouch:
         ):
             return
         if event.type == pygame.FINGERDOWN:
-            x, y = self._pointer_pos(event)
+            x = event.x * self.screen_w
+            y = event.y * self.screen_h
             self._touch[event.finger_id] = (x, y)
             self._try_use_tap(x, y)
         elif event.type == pygame.FINGERMOTION:
             if event.finger_id in self._touch:
-                x, y = self._pointer_pos(event)
-                self._touch[event.finger_id] = (x, y)
+                self._touch[event.finger_id] = (event.x * self.screen_w, event.y * self.screen_h)
         elif event.type == pygame.FINGERUP:
             self._touch.pop(event.finger_id, None)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             self._mouse_left = True
-            x, y = self._pointer_pos(event)
-            self._touch[-1] = (x, y)
-            self._try_use_tap(x, y)
+            self._touch[-1] = (float(event.pos[0]), float(event.pos[1]))
+            self._try_use_tap(float(event.pos[0]), float(event.pos[1]))
         elif event.type == pygame.MOUSEMOTION and self._mouse_left:
-            x, y = self._pointer_pos(event)
-            self._touch[-1] = (x, y)
+            self._touch[-1] = (float(event.pos[0]), float(event.pos[1]))
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._mouse_left = False
             self._touch.pop(-1, None)

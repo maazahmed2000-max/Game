@@ -140,6 +140,7 @@ class GameAssets:
         self._screen_w = SCREEN_W
         self._screen_h = SCREEN_H
         self._bg_raw: pygame.Surface | None = None
+        self._prober_cluster_cache: dict[int, pygame.Surface] = {}
 
     @property
     def world_rect(self) -> pygame.Rect:
@@ -154,9 +155,10 @@ class GameAssets:
         self._screen_w = width
         self._screen_h = height
         self._scaled_cache.clear()
+        self._prober_cluster_cache.clear()
 
     def align_background_to_view(self, view: "IsoView") -> None:
-        """Pin background art to the prober anchor so resize does not drift the floor."""
+        """Pin background art to the prober anchor; scale locked to the iso view."""
         if self._bg_raw is None:
             return
         from lab import layout_camera_anchor
@@ -164,10 +166,12 @@ class GameAssets:
         ac, ar = layout_camera_anchor()
         sx, sy = view.center(ac, ar)
         wr = self.world_rect
-        scale = min(
+        ref_hw = 36.0
+        fit_scale = min(
             wr.width / self._bg_raw.get_width(),
             wr.height / self._bg_raw.get_height(),
         )
+        scale = fit_scale * (view.hw / ref_hw)
         w = max(1, int(self._bg_raw.get_width() * scale))
         h = max(1, int(self._bg_raw.get_height() * scale))
         anchor_u, anchor_v = 0.48, 0.58
@@ -251,11 +255,16 @@ class GameAssets:
     ) -> None:
         if self.stations is None:
             return
-        sw, sh = self.stations.get_size()
         tw = int(max_width)
-        th = max(1, int(sh * tw / sw))
-        img = pygame.transform.smoothscale(self.stations, (tw, th)).convert_alpha()
+        if tw in self._prober_cluster_cache:
+            img = self._prober_cluster_cache[tw]
+        else:
+            sw, sh = self.stations.get_size()
+            th = max(1, int(sh * tw / sw))
+            img = pygame.transform.smoothscale(self.stations, (tw, th)).convert_alpha()
+            self._prober_cluster_cache[tw] = img
         cx, cy = int(center[0]), int(center[1])
+        th = img.get_height()
         surf.blit(img, (cx - tw // 2, cy - th + int(th * 0.08)))
 
 

@@ -1,9 +1,8 @@
-"""Window size state — fixed 1280×760 game coords; web letterboxes to the browser canvas."""
+"""Window size state — fixed 1280×760; web lets the browser scale the canvas uniformly."""
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 
 import pygame
 
@@ -11,58 +10,13 @@ from constants import SCREEN_H, SCREEN_W
 
 IS_WEB = sys.platform == "emscripten"
 
-# Web canvas can resize with the page/zoom; game logic stays at design resolution.
+# Web: fixed internal resolution; CSS/browser zoom scales the whole canvas as one bitmap.
 if IS_WEB:
-    WINDOW_FLAGS = pygame.RESIZABLE
+    WINDOW_FLAGS = 0
 else:
     WINDOW_FLAGS = 0
 
 _active_display: "DisplayState | None" = None
-
-
-@dataclass
-class WebScaler:
-    """Map fixed logical pixels to the browser canvas (handles zoom/resize)."""
-
-    logical_w: int = SCREEN_W
-    logical_h: int = SCREEN_H
-    canvas_w: int = SCREEN_W
-    canvas_h: int = SCREEN_H
-    offset_x: float = 0.0
-    offset_y: float = 0.0
-    scale: float = 1.0
-
-    def update_canvas(self, w: int, h: int) -> None:
-        self.canvas_w = max(w, 1)
-        self.canvas_h = max(h, 1)
-        sx = self.canvas_w / self.logical_w
-        sy = self.canvas_h / self.logical_h
-        self.scale = min(sx, sy)
-        dw = self.logical_w * self.scale
-        dh = self.logical_h * self.scale
-        self.offset_x = (self.canvas_w - dw) * 0.5
-        self.offset_y = (self.canvas_h - dh) * 0.5
-
-    def to_logical(self, pos: tuple[int | float, int | float]) -> tuple[int, int]:
-        x = (float(pos[0]) - self.offset_x) / self.scale
-        y = (float(pos[1]) - self.offset_y) / self.scale
-        x = max(0.0, min(float(self.logical_w - 1), x))
-        y = max(0.0, min(float(self.logical_h - 1), y))
-        return int(x), int(y)
-
-    def finger_to_logical(self, nx: float, ny: float) -> tuple[float, float]:
-        lx, ly = self.to_logical((nx * self.canvas_w, ny * self.canvas_h))
-        return float(lx), float(ly)
-
-    def blit_game(self, canvas: pygame.Surface, game: pygame.Surface) -> None:
-        canvas.fill((0, 0, 0))
-        dw = max(1, int(self.logical_w * self.scale))
-        dh = max(1, int(self.logical_h * self.scale))
-        if dw == game.get_width() and dh == game.get_height():
-            canvas.blit(game, (int(self.offset_x), int(self.offset_y)))
-        else:
-            scaled = pygame.transform.scale(game, (dw, dh))
-            canvas.blit(scaled, (int(self.offset_x), int(self.offset_y)))
 
 
 class DisplayState:
@@ -71,7 +25,6 @@ class DisplayState:
     def __init__(self, width: int = SCREEN_W, height: int = SCREEN_H) -> None:
         self.width = SCREEN_W
         self.height = SCREEN_H
-        self.scaler = WebScaler() if IS_WEB else None
         self.canvas: pygame.Surface | None = None
 
     @property
@@ -85,14 +38,36 @@ def set_active_display(display: DisplayState) -> None:
 
 
 def logical_mouse_pos(pos: tuple[int, int] | tuple[float, float]) -> tuple[int, int]:
-    if _active_display is not None and _active_display.scaler is not None:
-        return _active_display.scaler.to_logical(pos)
     return int(pos[0]), int(pos[1])
+
+
+def apply_web_canvas_css() -> None:
+    """Fit canvas in the page; browser zoom scales display size, not internal pixels."""
+    if not IS_WEB:
+        return
+    try:
+        import platform
+
+        canvas = platform.window.canvas
+        style = canvas.style
+        style.width = "100%"
+        style.height = "auto"
+        style.maxWidth = f"{SCREEN_W}px"
+        style.display = "block"
+        style.margin = "0 auto"
+        style.imageRendering = "auto"
+        doc = platform.document
+        if doc and doc.body:
+            doc.body.style.margin = "0"
+            doc.body.style.background = "#0c0e12"
+            doc.body.style.overflowX = "hidden"
+    except Exception:
+        pass
 
 
 def apply_fixed_window_chrome() -> None:
     """Remove minimize, maximize, and resize border on Windows (keeps layout static)."""
-    if sys.platform != "win32" or WINDOW_FLAGS != 0:
+    if sys.platform != "win32" or IS_WEB:
         return
     try:
         import ctypes
@@ -125,40 +100,34 @@ def apply_fixed_window_chrome() -> None:
 
 
 def sync_display_from_screen(display: DisplayState, screen: pygame.Surface) -> None:
-    """On web, only refresh canvas mapping — never change logical game size."""
+    """Web keeps fixed logical size; desktop resizable windows may update dimensions."""
     if IS_WEB:
-        if display.scaler is not None and display.canvas is not None:
-            display.scaler.update_canvas(*display.canvas.get_size())
         return
     if WINDOW_FLAGS != 0:
         display.width, display.height = screen.get_size()
 
 
 def create_game_surface(display: DisplayState) -> pygame.Surface:
-    """Return the surface to draw on; on web this is a fixed off-screen buffer."""
+    """Return the drawing surface (always 1280×760)."""
     display.canvas = pygame.display.set_mode(display.size, WINDOW_FLAGS)
-    if IS_WEB and display.scaler is not None:
-        display.scaler.update_canvas(*display.canvas.get_size())
-        set_active_display(display)
-        return pygame.Surface((SCREEN_W, SCREEN_H))
+    apply_web_canvas_css()
     apply_fixed_window_chrome()
     set_active_display(display)
     return display.canvas
 
 
 def handle_video_resize(display: DisplayState, w: int, h: int) -> None:
-    """Browser/window resize or zoom — update canvas mapping only."""
+    """Ignore browser zoom/resize on web — keep a fixed 1280×760 backing store."""
+    if IS_WEB:
+        display.canvas = pygame.display.set_mode(display.size, WINDOW_FLAGS)
+        apply_web_canvas_css()
+        return
     sw, sh = max(320, w), max(480, h)
     display.canvas = pygame.display.set_mode((sw, sh), WINDOW_FLAGS)
-    if display.scaler is not None:
-        display.scaler.update_canvas(sw, sh)
+    display.width, display.height = sw, sh
 
 
 def present_frame(display: DisplayState, game: pygame.Surface) -> None:
-    """Blit the fixed game buffer to the window/canvas and flip."""
-    if display.scaler is not None and display.canvas is not None:
-        cw, ch = display.canvas.get_size()
-        if cw != display.scaler.canvas_w or ch != display.scaler.canvas_h:
-            display.scaler.update_canvas(cw, ch)
-        display.scaler.blit_game(display.canvas, game)
+    """Present the frame (game surface is the canvas on web and desktop)."""
+    del display, game
     pygame.display.flip()
