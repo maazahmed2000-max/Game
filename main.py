@@ -545,7 +545,7 @@ async def main() -> None:
     sw, sh = display.width, display.height
     assets.set_screen_size(sw, sh)
     view = make_iso_view_for_background(assets, sw, sh)
-    sticks = SoloTouch(sw, sh)
+    sticks = SoloTouch(sw, sh, display=display)
     f_ui = font(22)
     f_small = font(17)
     f_btn = font(16)
