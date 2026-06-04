@@ -17,11 +17,21 @@ HIGHLIGHT = (255, 228, 120)
 
 SHIFT_SECONDS = 180
 INVENTORY_WAIT_S = 2.6
-CHAMBER_RUN_S = 3.1
+CHAMBER_RUN_MIN_S = 10.0
+CHAMBER_RUN_MAX_S = 22.0
 
 # New wafer lots every 10–15 s (randomized)
 SPAWN_MIN_S = 10.0
 SPAWN_MAX_S = 15.0
+MAX_WAFER_QUEUE = 6
 
-# Overlay walkable tiles + station hitbox radii (toggle off for normal play).
-DEBUG_DRAW_WALKABLE = True
+# HUD / world progress bar widths (pixels)
+HUD_PROGRESS_BAR_W = 200
+WORLD_PROGRESS_BAR_W = 110
+HUD_PANEL_WIDTH = 220
+
+# Overlay walkable tiles when editor toggle is on (see in-game Editor switch).
+DEBUG_DRAW_WALKABLE = False
+
+# Dev-only: drag-edit walls, blocks, and zone hitboxes (M toggle, S save). Off for release builds.
+DEBUG_MAP_EDITOR = True

@@ -50,6 +50,14 @@ class SoloTouch:
     _use_next: bool = False
 
     def __post_init__(self) -> None:
+        self._layout_controls()
+
+    def set_screen_size(self, screen_w: int, screen_h: int) -> None:
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self._layout_controls()
+
+    def _layout_controls(self) -> None:
         r = self.radius
         m = self.margin
         cx = self.screen_w * 0.5
@@ -58,7 +66,13 @@ class SoloTouch:
         uw, uh = 100, 48
         self.use_rect = pygame.Rect(int(cx + r + m), int(cy - uh * 0.5), uw, uh)
 
-    def handle_event(self, event: pygame.event.Event) -> None:
+    def handle_event(self, event: pygame.event.Event, *, ignore_mouse: bool = False) -> None:
+        if ignore_mouse and event.type in (
+            pygame.MOUSEBUTTONDOWN,
+            pygame.MOUSEBUTTONUP,
+            pygame.MOUSEMOTION,
+        ):
+            return
         if event.type == pygame.FINGERDOWN:
             x = event.x * self.screen_w
             y = event.y * self.screen_h

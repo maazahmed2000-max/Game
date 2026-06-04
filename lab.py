@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
-from constants import COLS, ROWS
+ProberSortOutcome = Literal["front", "behind", "strip"]
+ProberSide = Literal["l", "r"]
+
+from constants import CHAMBER_RUN_MAX_S, CHAMBER_RUN_MIN_S, COLS, ROWS
+from dev_layout import ZoneDef, get_layout, lattice_cell_corners, point_in_lattice_cell
 
 
 class Cell(Enum):
@@ -62,13 +67,75 @@ def test_label(t: TestSpec) -> str:
 
 
 def receiving_booths() -> List[Tuple[int, int]]:
-    """Pickup tiles in front of the STORAGE unit (left bay on the background)."""
-    return [(5, 9), (5, 10), (5, 11), (6, 9), (6, 10)]
+    """Pickup tiles where incoming wafer lots spawn (editable in map editor)."""
+    return list(get_layout().receiving_booths)
 
 
 def prober_visual_center() -> Tuple[float, float]:
-    """Screen placement for the prober cluster — center of the open floor."""
-    return (13.0, 10.0)
+    """World position of the prober cluster (zones are offset from here)."""
+    lay = get_layout()
+    return lay.prober_cx, lay.prober_cy
+
+
+def layout_camera_anchor() -> Tuple[float, float]:
+    """World point pinned to screen center — fixed so prober can move on the floor after reload."""
+    lay = get_layout()
+    return lay.view_anchor()
+
+
+def player_prober_depth_side(col: float, row: float) -> float:
+    """Signed side of the prober front plane: >0 in front, <0 behind (for sprite sort)."""
+    lay = get_layout()
+    fx, fy = lay.prober_front_dir()
+    ox, oy = lay.prober_front_origin()
+    return (col - ox) * fx + (row - oy) * fy
+
+
+def prober_sort_near_radius() -> float:
+    return get_layout().prober_sort_near_radius
+
+
+def prober_sort_side_clear() -> float:
+    return get_layout().prober_sort_side_clear
+
+
+def prober_sort_in_near_zone(col: float, row: float) -> bool:
+    lay = get_layout()
+    pc, pr = lay.prober_cx, lay.prober_cy
+    near = lay.prober_sort_near_radius
+    return (col - pc) ** 2 + (row - pr) ** 2 <= near * near
+
+
+def prober_sort_outcome(col: float, row: float) -> ProberSortOutcome:
+    """How the operator sorts vs the prober at this floor position (matches in-game rules)."""
+    clear = prober_sort_side_clear()
+    side = player_prober_depth_side(col, row)
+    if side < -clear:
+        return "behind"
+    if side > clear:
+        return "front"
+    return "strip"
+
+
+def player_draws_in_front_of_prober(
+    col: float,
+    row: float,
+    *,
+    player_foot_y: Optional[float] = None,
+    prober_foot_y: Optional[float] = None,
+) -> bool:
+    """True when the operator sprite should draw on top of the prober cluster."""
+    clear = prober_sort_side_clear()
+    side = player_prober_depth_side(col, row)
+    if side < -clear:
+        return False
+    if side > clear:
+        return True
+    if not prober_sort_in_near_zone(col, row):
+        return side >= 0.0
+    if player_foot_y is None or prober_foot_y is None:
+        return side >= 0.0
+    return player_foot_y >= prober_foot_y
 
 
 @dataclass(frozen=True)
@@ -82,22 +149,16 @@ class StationZone:
     radius: float = 1.35
 
 
-def _zone(col_off: float, row_off: float, step: Cell, zone_id: str, radius: float = 1.35) -> StationZone:
+def _zone_from_def(zone_id: str, zd: ZoneDef) -> StationZone:
     cx, cy = prober_visual_center()
-    return StationZone(zone_id, cx + col_off, cy + row_off, step, radius)
+    step = Cell[zd.step] if zd.step in Cell.__members__ else Cell.PROBER_WAIT
+    return StationZone(zone_id, cx + zd.dx, cy + zd.dy, step, zd.radius)
 
 
 def prober_station_zones() -> Tuple[StationZone, ...]:
     """Hitboxes: MHU center, side racks (config), chucks (test), load pads."""
-    return (
-        _zone(0.0, 0.0, Cell.PROBER_WAIT, "mhu", 2.0),
-        _zone(-1.75, -0.95, Cell.TEST_BENCH, "rack_l", 1.25),
-        _zone(1.75, -0.95, Cell.TEST_BENCH, "rack_r", 1.25),
-        _zone(-2.05, 0.05, Cell.TEST_CHAMBER, "chuck_l", 1.3),
-        _zone(2.05, 0.05, Cell.TEST_CHAMBER, "chuck_r", 1.3),
-        _zone(-2.05, 0.75, Cell.PROBER_LOAD, "load_l", 1.25),
-        _zone(2.05, 0.75, Cell.PROBER_LOAD, "load_r", 1.25),
-    )
+    lay = get_layout()
+    return tuple(_zone_from_def(zid, zd) for zid, zd in lay.zones.items())
 
 
 def config_rack_zones() -> List[StationZone]:
@@ -105,6 +166,9 @@ def config_rack_zones() -> List[StationZone]:
 
 
 def mhu_zone() -> StationZone:
+    for z in prober_station_zones():
+        if z.zone_id == "mhu":
+            return z
     return prober_station_zones()[0]
 
 
@@ -156,6 +220,39 @@ def near_zone(col: float, row: float, zone: StationZone) -> bool:
     return (col - zone.col) ** 2 + (row - zone.row) ** 2 <= zone.radius * zone.radius
 
 
+def zone_by_id(zone_id: str) -> Optional[StationZone]:
+    for z in prober_station_zones():
+        if z.zone_id == zone_id:
+            return z
+    return None
+
+
+def player_near_zone_id(col: float, row: float, zone_id: str) -> bool:
+    z = zone_by_id(zone_id)
+    return z is not None and near_zone(col, row, z)
+
+
+def nearest_prober_side(col: float, row: float, prefix: str) -> ProberSide:
+    """Nearest left/right station for load, rack, or chuck."""
+    zl = zone_by_id(f"{prefix}_l")
+    zr = zone_by_id(f"{prefix}_r")
+    if zl is None and zr is None:
+        return "l"
+    if zl is None:
+        return "r"
+    if zr is None:
+        return "l"
+    dl = (col - zl.col) ** 2 + (row - zl.row) ** 2
+    dr = (col - zr.col) ** 2 + (row - zr.row) ** 2
+    return "l" if dl <= dr else "r"
+
+
+def nearest_rack_side(col: float, row: float) -> Optional[ProberSide]:
+    if not (player_near_zone_id(col, row, "rack_l") or player_near_zone_id(col, row, "rack_r")):
+        return None
+    return nearest_prober_side(col, row, "rack")
+
+
 def near_mhu(col: float, row: float, radius: float = INTERACT_RADIUS) -> bool:
     z = mhu_zone()
     return near_zone(col, row, z) if radius >= z.radius else in_vicinity(col, row, mhu_tile(), radius)
@@ -172,88 +269,152 @@ def player_near_step(
     cells: List[List[Cell]],
     col: float,
     row: float,
-    order: WaferOrder,
+    order: "WaferOrder",
     step: Cell,
     radius: float = INTERACT_RADIUS,
 ) -> bool:
-    del radius  # zones carry their own radius
+    del radius
     if step == Cell.RECEIVING:
         return in_vicinity(col, row, order.spawn_booth)
-    if step in (Cell.PROBER_WAIT, Cell.PROBER_LOAD, Cell.TEST_BENCH, Cell.TEST_CHAMBER):
+    if step == Cell.PROBER_WAIT:
+        return near_mhu(col, row)
+    side = order.prober_side
+    if step == Cell.PROBER_LOAD:
+        if side:
+            return player_near_zone_id(col, row, f"load_{side}")
         return near_step_zone(col, row, step)
+    if step == Cell.TEST_BENCH:
+        if side:
+            return player_near_zone_id(col, row, f"rack_{side}")
+        return player_near_zone_id(col, row, "rack_l") or player_near_zone_id(col, row, "rack_r")
+    if step == Cell.TEST_CHAMBER:
+        if side:
+            return player_near_zone_id(col, row, f"chuck_{side}")
+        return player_near_zone_id(col, row, "chuck_l") or player_near_zone_id(col, row, "chuck_r")
+    if step == Cell.FINISHED_RACK:
+        return in_vicinity_of_station(cells, col, row, step)
     return in_vicinity_of_station(cells, col, row, step)
 
 
 def _storage_blocked(col: int, row: int) -> bool:
     """STORAGE shelving — not walkable through the rack."""
-    return col <= 9 and row <= 8
+    lay = get_layout()
+    return col <= lay.storage_c1 and row <= lay.storage_r1
 
 
-def _prober_footprint_blocked(col: int, row: int) -> bool:
-    """Iso-aligned rectangle under the TEL cluster (clean edges on the tile grid)."""
-    cx, cy = prober_visual_center()
-    u = col - row
-    v = col + row
-    cu = cx - cy
-    cv = cx + cy
-    half_u = 4.6
-    half_v = 2.1
-    return abs(u - cu) <= half_u and abs(v - cv) <= half_v
-
-
-def find_walkable_spawn(cells: List[List[Cell]]) -> Tuple[float, float]:
-    """Spawn in front of the prober, never inside its footprint."""
-    cx, cy = prober_visual_center()
-    for c, r in (
-        (cx + 1.5, cy + 2.2),
-        (cx + 2.0, cy + 1.8),
-        (cx, cy + 2.8),
-        (cx - 1.0, cy + 2.5),
-        (cx + 1.0, cy + 3.0),
-        (10.0, 12.0),
-        (16.0, 11.0),
-    ):
-        ic, ir = int(round(c)), int(round(r))
-        if walkable(cells, ic, ir):
-            return c, r
-    for r in range(ROWS):
-        for c in range(COLS):
-            if walkable(cells, c, r):
-                return float(c) + 0.5, float(r) + 0.5
-    return 14.0, 12.0
-
-
-def _blocked_by_background(col: int, row: int) -> bool:
-    """Walls, storage rack, prober body, and right-side cabinet."""
-    if col <= 2 or col >= COLS - 3:
+def _structural_blocked(col: int, row: int) -> bool:
+    """Fixed map geometry (walls, storage, spade) — not the painted skew lattice."""
+    lay = get_layout()
+    if col <= lay.wall_left or col >= lay.wall_right:
         return True
-    if row <= 2 or row >= ROWS - 3:
+    if row <= lay.wall_top or row >= lay.wall_bottom:
         return True
     if _storage_blocked(col, row):
         return True
-    if _prober_footprint_blocked(col, row):
-        return True
-    # SPADE tool cabinet (upper-right)
-    if col >= 22 and row <= 8:
+    if col >= lay.spade_c0 and row <= lay.spade_r1:
         return True
     return False
+
+
+_STATION_CELLS = frozenset(
+    {
+        Cell.RECEIVING,
+        Cell.PROBER_LOAD,
+        Cell.PROBER_WAIT,
+        Cell.TEST_BENCH,
+        Cell.TEST_CHAMBER,
+        Cell.FINISHED_RACK,
+    }
+)
+
+
+def _apply_lattice_floor(cells: List[List[Cell]]) -> None:
+    """Build walkable map from skew-lattice parallelograms (axes + paint define real tiles)."""
+    lay = get_layout()
+    origin = lay.tile_origin()
+    ax, ay = lay.tile_axis_x, lay.tile_axis_y
+
+    for r in range(ROWS):
+        for c in range(COLS):
+            if cells[r][c] in _STATION_CELLS:
+                continue
+            cells[r][c] = Cell.WALL
+
+    for i in range(-32, 33):
+        for j in range(-32, 33):
+            corners = lattice_cell_corners(i, j, origin, ax, ay)
+            cols = [p[0] for p in corners]
+            rows = [p[1] for p in corners]
+            c0 = max(0, int(math.floor(min(cols))))
+            c1 = min(COLS - 1, int(math.ceil(max(cols))))
+            r0 = max(0, int(math.floor(min(rows))))
+            r1 = min(ROWS - 1, int(math.ceil(max(rows))))
+            open_cell = lay.is_cell_walkable(i, j)
+            for c in range(c0, c1 + 1):
+                for r in range(r0, r1 + 1):
+                    if cells[r][c] in _STATION_CELLS:
+                        continue
+                    if _structural_blocked(c, r):
+                        continue
+                    if not point_in_lattice_cell(
+                        float(c) + 0.5, float(r) + 0.5, i, j, origin, ax, ay
+                    ):
+                        continue
+                    cells[r][c] = Cell.FLOOR if open_cell else Cell.WALL
+
+
+def world_walkable(cells: List[List[Cell]], col: float, row: float) -> bool:
+    """Walk hitbox = inside an open skew-lattice parallelogram (axes define tile shape)."""
+    gc, gr = float(col), float(row)
+    ic, ir = int(round(gc)), int(round(gr))
+    if not (0 <= ic < COLS and 0 <= ir < ROWS):
+        return False
+    if _structural_blocked(ic, ir):
+        return False
+    if cells[ir][ic] in _STATION_CELLS:
+        return True
+    return get_layout().open_at_world(gc, gr)
+
+
+def find_walkable_spawn(cells: List[List[Cell]]) -> Tuple[float, float]:
+    """Spawn at the center of an open skew-lattice cell near the prober."""
+    lay = get_layout()
+    cx, cy = prober_visual_center()
+    i0, j0 = lay.cell_at_world(cx, cy)
+    for radius in range(0, 14):
+        for di in range(-radius, radius + 1):
+            for dj in range(-radius, radius + 1):
+                if abs(di) != radius and abs(dj) != radius and radius > 0:
+                    continue
+                i, j = i0 + di, j0 + dj
+                if not lay.is_cell_walkable(i, j):
+                    continue
+                wc, wr = lay.cell_center(i, j)
+                if world_walkable(cells, wc, wr):
+                    return wc, wr
+    for r in range(ROWS):
+        for c in range(COLS):
+            if world_walkable(cells, float(c) + 0.5, float(r) + 0.5):
+                return float(c) + 0.5, float(r) + 0.5
+    return 14.0, 12.0
 
 
 def default_map() -> List[List[Cell]]:
     g: List[List[Cell]] = [[Cell.WALL for _ in range(COLS)] for _ in range(ROWS)]
 
-    for r in range(ROWS):
-        for c in range(COLS):
-            if not _blocked_by_background(c, r):
-                g[r][c] = Cell.FLOOR
-
     for c, r in receiving_booths():
         g[r][c] = Cell.RECEIVING
 
-    # Prober uses zone hitboxes only (footprint tiles stay WALL); no grid cells on the sprite
-    g[10][22] = Cell.FINISHED_RACK
+    lay = get_layout()
+    g[lay.finished_r][lay.finished_c] = Cell.FINISHED_RACK
 
+    _apply_lattice_floor(g)
     return g
+
+
+def refresh_map_from_layout() -> List[List[Cell]]:
+    """Rebuild walkable grid after dev layout edits."""
+    return default_map()
 
 
 def step_destination(
@@ -268,20 +429,42 @@ def step_destination(
         return None
     if exp == Cell.RECEIVING:
         return order.spawn_booth if not carrying else None
-    if exp in (Cell.PROBER_WAIT, Cell.PROBER_LOAD, Cell.TEST_BENCH, Cell.TEST_CHAMBER):
+    side = order.prober_side
+    if exp == Cell.PROBER_WAIT:
+        z = mhu_zone()
+        return int(round(z.col)), int(round(z.row))
+    if exp == Cell.PROBER_LOAD and side:
+        z = zone_by_id(f"load_{side}")
+        if z:
+            return int(round(z.col)), int(round(z.row))
+    if exp == Cell.TEST_BENCH and side:
+        z = zone_by_id(f"rack_{side}")
+        if z:
+            return int(round(z.col)), int(round(z.row))
+    if exp == Cell.TEST_CHAMBER and side:
+        z = zone_by_id(f"chuck_{side}")
+        if z:
+            return int(round(z.col)), int(round(z.row))
+    if exp in (Cell.PROBER_LOAD, Cell.TEST_BENCH, Cell.TEST_CHAMBER):
         for z in prober_station_zones():
             if z.step == exp:
                 return int(round(z.col)), int(round(z.row))
     if exp == Cell.FINISHED_RACK:
+        if not carrying:
+            if side:
+                z = zone_by_id(f"load_{side}")
+                if z:
+                    return int(round(z.col)), int(round(z.row))
+            for z in prober_station_zones():
+                if z.step == Cell.PROBER_LOAD:
+                    return int(round(z.col)), int(round(z.row))
         tiles = all_station_tiles(cells, exp)
         return tiles[0] if tiles else None
     return None
 
 
-def walkable(cells: List[List[Cell]], col: int, row: int) -> bool:
-    if not (0 <= col < COLS and 0 <= row < ROWS):
-        return False
-    return cells[row][col] != Cell.WALL
+def walkable(cells: List[List[Cell]], col: float, row: float) -> bool:
+    return world_walkable(cells, col, row)
 
 
 def station_at(cells: List[List[Cell]], col: int, row: int) -> Optional[Cell]:
@@ -317,6 +500,10 @@ class WaferOrder:
         self.completed_steps: List[Cell] = []
         self.required = required
         self.spawn_booth = spawn_booth
+        self.chamber_duration = 0.0
+        self.chamber_elapsed = 0.0
+        self.chamber_started = False
+        self.prober_side: Optional[ProberSide] = None
 
     def next_expected(self) -> Optional[Cell]:
         idx = len(self.completed_steps)
@@ -340,29 +527,103 @@ class WaferOrder:
     def is_done(self) -> bool:
         return len(self.completed_steps) >= len(self.recipe)
 
-    def progress_text(self) -> str:
-        names = {
-            Cell.RECEIVING: "Receive",
-            Cell.PROBER_LOAD: "Prober load",
-            Cell.PROBER_WAIT: "MHU inventory",
-            Cell.TEST_BENCH: "Config rack",
-            Cell.TEST_CHAMBER: "Prober test",
-            Cell.FINISHED_RACK: "Finished rack",
-        }
-        parts: List[str] = []
-        for i, step in enumerate(self.recipe):
-            label = names[step]
-            if i < len(self.completed_steps):
-                parts.append(f"[{label}]")
-            elif i == len(self.completed_steps):
-                parts.append(f"->{label}")
-            else:
-                parts.append(label)
-        bx, by = self.spawn_booth
-        return (
-            " ".join(parts)
-            + f"  |  target test: {test_label(self.required)}  |  pickup booth ({bx},{by})"
-        )
+    def ticket_label(self) -> str:
+        """Final lot type only (Overcooked-style ticket, not recipe steps)."""
+        return test_label(self.required)
+
+    def start_chamber_run(self) -> None:
+        if self.next_expected() != Cell.TEST_CHAMBER or self.chamber_started:
+            return
+        if self.prober_side is None:
+            return
+        self.chamber_started = True
+        self.chamber_elapsed = 0.0
+        self.chamber_duration = random.uniform(CHAMBER_RUN_MIN_S, CHAMBER_RUN_MAX_S)
+
+    def tick_chamber(self, dt: float) -> bool:
+        """Advance chamber timer; returns True when the run completes."""
+        if not self.chamber_started or self.next_expected() != Cell.TEST_CHAMBER:
+            return False
+        self.chamber_elapsed += dt
+        if self.chamber_elapsed >= self.chamber_duration:
+            self.force_advance(Cell.TEST_CHAMBER)
+            self.chamber_started = False
+            return True
+        return False
+
+    def chamber_progress(self) -> float:
+        if not self.chamber_started or self.chamber_duration <= 0:
+            return 0.0
+        return min(1.0, self.chamber_elapsed / self.chamber_duration)
+
+
+def wafer_visible_on_operator(order: "WaferOrder") -> bool:
+    """Show carried wafer sprite only when the lot is in the operator's hands."""
+    exp = order.next_expected()
+    return exp in (Cell.PROBER_LOAD, Cell.FINISHED_RACK)
+
+
+def chamber_order_on_side(orders: List["WaferOrder"], side: ProberSide) -> Optional["WaferOrder"]:
+    for o in orders:
+        if o.chamber_started and o.prober_side == side:
+            return o
+    return None
+
+
+def bench_order_on_side(
+    orders: List["WaferOrder"],
+    side: ProberSide,
+    col: float,
+    row: float,
+) -> Optional["WaferOrder"]:
+    if not player_near_zone_id(col, row, f"rack_{side}"):
+        return None
+    for o in orders:
+        if o.next_expected() == Cell.TEST_BENCH and o.prober_side == side:
+            return o
+    for o in orders:
+        if o.next_expected() == Cell.TEST_BENCH:
+            return o
+    return None
+
+
+def gameplay_focus_order(
+    orders: List["WaferOrder"],
+    carrying_idx: Optional[int],
+    cells: List[List[Cell]],
+    col: float,
+    row: float,
+) -> Optional["WaferOrder"]:
+    """Order the HUD / objective should emphasize (not background chamber runs)."""
+    if carrying_idx is not None and 0 <= carrying_idx < len(orders):
+        return orders[carrying_idx]
+    for o in orders:
+        exp = o.next_expected()
+        if exp is None:
+            continue
+        if exp == Cell.TEST_CHAMBER and o.chamber_started:
+            continue
+        if player_near_step(cells, col, row, o, exp):
+            return o
+    for o in orders:
+        exp = o.next_expected()
+        if exp is None:
+            continue
+        if exp == Cell.TEST_CHAMBER and o.chamber_started:
+            continue
+        return o
+    return orders[0] if orders else None
+
+
+def orders_queue_text(orders: List["WaferOrder"]) -> str:
+    """Comma-separated final test types queued — current lot first."""
+    if not orders:
+        return "Queue: —"
+    parts: List[str] = []
+    for i, order in enumerate(orders):
+        tag = order.ticket_label()
+        parts.append(f"▸ {tag}" if i == 0 else tag)
+    return "Queue:  " + "   ".join(parts)
 
 
 def random_test() -> TestSpec:

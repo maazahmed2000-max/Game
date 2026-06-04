@@ -14,7 +14,12 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 FrameKey = Tuple[int, str]  # (operator_row, pose_name)
 
 OPERATOR_HEIGHT_FACTOR = 6.4
-PROBER_WIDTH_FACTOR = 10.8
+PROBER_WIDTH_FACTOR = 15.5
+OPERATOR_COUNT = 2
+OPERATOR_NAMES: Tuple[str, ...] = ("Martin", "Katelyn")
+
+WHITE_KEY = (255, 255, 255)
+BLACK_KEY = (0, 0, 0)
 
 
 def _has_transparent_pixels(surf: pygame.Surface, sample_step: int = 8) -> bool:
@@ -26,20 +31,27 @@ def _has_transparent_pixels(surf: pygame.Surface, sample_step: int = 8) -> bool:
     return False
 
 
-def _apply_black_key(surf: pygame.Surface) -> pygame.Surface:
-    """Sheets exported with a black matte but no alpha channel."""
+def _apply_colorkey(surf: pygame.Surface, rgb: Tuple[int, int, int]) -> pygame.Surface:
+    """Sheets exported with a solid matte but no alpha channel."""
     keyed = surf.convert()
-    keyed.set_colorkey((0, 0, 0))
+    keyed.set_colorkey(rgb)
     return keyed.convert_alpha()
 
 
-def _load_rgba(path: Path, *, key_black: bool | None = None) -> pygame.Surface:
+def _load_rgba(
+    path: Path,
+    *,
+    colorkey: Tuple[int, int, int] | None = None,
+    key_black: bool | None = None,
+) -> pygame.Surface:
     raw = pygame.image.load(path)
+    if colorkey is not None:
+        return _apply_colorkey(raw, colorkey)
     if key_black is None:
         probe = raw.convert_alpha()
         key_black = not _has_transparent_pixels(probe)
     if key_black:
-        return _apply_black_key(raw)
+        return _apply_colorkey(raw, BLACK_KEY)
     return raw.convert_alpha()
 
 
@@ -48,7 +60,22 @@ def _trim_visible(surf: pygame.Surface) -> pygame.Surface:
     rects = mask.get_bounding_rects()
     if not rects:
         return surf
-    return surf.subsurface(rects[0]).copy()
+    union = rects[0]
+    for rect in rects[1:]:
+        union = union.union(rect)
+    return surf.subsurface(union).copy()
+
+
+def _trim_operator_frame(surf: pygame.Surface) -> pygame.Surface:
+    """Crop to the main sprite — ignore colorkey specks that widen the union bbox."""
+    mask = pygame.mask.from_surface(surf)
+    rects = mask.get_bounding_rects()
+    if not rects:
+        return surf
+    if len(rects) == 1:
+        return surf.subsurface(rects[0]).copy()
+    main = max(rects, key=lambda r: r.width * r.height)
+    return surf.subsurface(main).copy()
 
 
 def _slice_operator_sheet(sheet: pygame.Surface) -> Dict[FrameKey, pygame.Surface]:
@@ -59,7 +86,7 @@ def _slice_operator_sheet(sheet: pygame.Surface) -> Dict[FrameKey, pygame.Surfac
     for row in range(2):
         for col, name in enumerate(names):
             rect = (col * cw, row * ch, cw, ch)
-            frame = _trim_visible(sheet.subsurface(rect).copy())
+            frame = _trim_operator_frame(sheet.subsurface(rect).copy())
             out[(row, name)] = frame
     return out
 
@@ -110,26 +137,55 @@ class GameAssets:
         self._ops_right: Dict[FrameKey, pygame.Surface] = {}
         self._scaled_cache: Dict[tuple, pygame.Surface] = {}
         self._loaded = False
+        self._screen_w = SCREEN_W
+        self._screen_h = SCREEN_H
+        self._bg_raw: pygame.Surface | None = None
 
     @property
     def world_rect(self) -> pygame.Rect:
         return pygame.Rect(
             0,
             self.WORLD_TOP,
-            SCREEN_W,
-            SCREEN_H - self.WORLD_TOP - self.FOOT_BAR,
+            self._screen_w,
+            self._screen_h - self.WORLD_TOP - self.FOOT_BAR,
         )
+
+    def set_screen_size(self, width: int, height: int) -> None:
+        self._screen_w = width
+        self._screen_h = height
+        self._scaled_cache.clear()
+
+    def align_background_to_view(self, view: "IsoView") -> None:
+        """Pin background art to the prober anchor so resize does not drift the floor."""
+        if self._bg_raw is None:
+            return
+        from lab import layout_camera_anchor
+
+        ac, ar = layout_camera_anchor()
+        sx, sy = view.center(ac, ar)
+        wr = self.world_rect
+        scale = min(
+            wr.width / self._bg_raw.get_width(),
+            wr.height / self._bg_raw.get_height(),
+        )
+        w = max(1, int(self._bg_raw.get_width() * scale))
+        h = max(1, int(self._bg_raw.get_height() * scale))
+        anchor_u, anchor_v = 0.48, 0.58
+        bx = int(sx - w * anchor_u)
+        by = int(sy - h * anchor_v)
+        self.bg_rect = pygame.Rect(bx, by, w, h)
+        self.background = pygame.transform.smoothscale(
+            self._bg_raw, (w, h)
+        ).convert_alpha()
 
     def load(self) -> None:
         if self._loaded:
             return
-        bg_raw = pygame.image.load(ASSETS_DIR / "background.png")
-        self.bg_rect = _fit_rect(bg_raw.get_width(), bg_raw.get_height(), self.world_rect)
-        self.background = pygame.transform.smoothscale(
-            bg_raw, (self.bg_rect.width, self.bg_rect.height)
-        )
+        self._bg_raw = _load_rgba(ASSETS_DIR / "background.png", colorkey=WHITE_KEY)
+        self.bg_rect = pygame.Rect(0, 0, 0, 0)
+        self.background = None
 
-        stations_raw = _load_rgba(ASSETS_DIR / "stations.png")
+        stations_raw = _load_rgba(ASSETS_DIR / "stations.png", colorkey=WHITE_KEY)
         self.stations = _trim_visible(stations_raw)
 
         ops_l = _load_rgba(ASSETS_DIR / "operators.png", key_black=True)
@@ -142,6 +198,17 @@ class GameAssets:
 
         self._loaded = True
 
+    def operator_menu_portrait(self, operator: int, *, sprite_h: int = 150) -> pygame.Surface:
+        """Title-screen card art — left-facing sheet (operators.png), not in-game right sheet."""
+        op = max(0, min(OPERATOR_COUNT - 1, operator))
+        cache_key = ("menu_portrait", op, sprite_h)
+        if cache_key in self._scaled_cache:
+            return self._scaled_cache[cache_key]
+        frame = self._ops_left[(op, "idle")]
+        scaled = _scale_to_height(frame, sprite_h)
+        self._scaled_cache[cache_key] = scaled
+        return scaled
+
     def operator_frame(
         self,
         operator: int,
@@ -151,6 +218,7 @@ class GameAssets:
         carrying: bool,
         sprite_h: int,
     ) -> pygame.Surface:
+        operator = max(0, min(OPERATOR_COUNT - 1, operator))
         pose = ("hold_walk" if moving else "hold_idle") if carrying else ("walk" if moving else "idle")
         cache_key = (operator, facing_right, pose, sprite_h)
         if cache_key in self._scaled_cache:
@@ -191,15 +259,23 @@ class GameAssets:
         surf.blit(img, (cx - tw // 2, cy - th + int(th * 0.08)))
 
 
-def make_iso_view_for_background(assets: GameAssets) -> "IsoView":
-    """Same diamond grid as the original blueprint map, shifted onto the background art."""
-    from iso_render import IsoView, make_iso_view
+def make_iso_view_for_background(
+    assets: GameAssets,
+    screen_w: int | None = None,
+    screen_h: int | None = None,
+) -> "IsoView":
+    """Fixed tile size; camera anchor centered in the window (prober may be offset on the floor)."""
+    from iso_render import IsoView
+    from lab import layout_camera_anchor
 
-    base = make_iso_view()
-    wr = assets.bg_rect
-    anchor_col, anchor_row = 13.0, 10.0  # prober art anchor (not player spawn)
-    floor_cx = wr.x + wr.width * 0.48
-    floor_cy = wr.y + wr.height * 0.58
-    ox = floor_cx - (anchor_col - anchor_row) * base.hw
-    oy = floor_cy - (anchor_col + anchor_row) * base.hh
-    return IsoView(base.hw, base.hh, ox, oy, base.wall_h)
+    sw = screen_w if screen_w is not None else assets._screen_w
+    sh = screen_h if screen_h is not None else assets._screen_h
+    hw, hh, wall_h = 36.0, 21.0, 40.0
+    ac, ar = layout_camera_anchor()
+    center_x = sw * 0.5
+    center_y = sh * 0.5
+    ox = center_x - (ac - ar) * hw
+    oy = center_y - (ac + ar) * hh
+    view = IsoView(hw, hh, ox, oy, wall_h)
+    assets.align_background_to_view(view)
+    return view

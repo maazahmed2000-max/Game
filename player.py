@@ -1,7 +1,7 @@
 """Lab tech movement on a grid (top-down logic, isometric view)."""
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from lab import Cell, walkable
 
@@ -19,6 +19,7 @@ class Player:
         self.row = float(row)
         self.speed = 6.0
         self.carrying_wafer = False
+        self.carrying_order_idx: Optional[int] = None
         self.facing_right = True
 
     def center_tile(self) -> Tuple[int, int]:
@@ -26,6 +27,7 @@ class Player:
 
     def drop_wafer(self) -> None:
         self.carrying_wafer = False
+        self.carrying_order_idx = None
 
     def update(
         self,
@@ -47,7 +49,7 @@ class Player:
         ncol = self.col + nx * step
         nrow = self.row + ny * step
 
-        if walkable(cells, int(round(ncol)), int(round(self.row))):
+        if walkable(cells, ncol, self.row):
             self.col = ncol
-        if walkable(cells, int(round(self.col)), int(round(nrow))):
+        if walkable(cells, self.col, nrow):
             self.row = nrow
