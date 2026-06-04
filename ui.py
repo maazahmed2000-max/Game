@@ -9,7 +9,7 @@ import pygame
 from constants import HUD_PANEL_WIDTH, HUD_PROGRESS_BAR_W
 
 if TYPE_CHECKING:
-    from lab import TestSpec, WaferOrder
+    from lab import ChuckStandbyTracker, StandbyPenaltyNotice, TestSpec, WaferOrder
 
 
 def blit_centered(
@@ -118,6 +118,80 @@ def draw_rack_config_panel(
     return y + 6
 
 
+def draw_chuck_status_panel(
+    surf: pygame.Surface,
+    panel: pygame.Rect,
+    font: pygame.font.Font,
+    y: int,
+    orders: List["WaferOrder"],
+    tracker: "ChuckStandbyTracker",
+) -> int:
+    from lab import ChuckStatus, chuck_status_for_side
+
+    y = blit_left(surf, panel, font, y, "Chucks", (200, 210, 230))
+    y += 2
+    for side, name in (("l", "Left"), ("r", "Right")):
+        status = chuck_status_for_side(orders, side)
+        productive = status == ChuckStatus.PRODUCTIVE
+        dot = (70, 210, 100) if productive else (235, 200, 70)
+        label = "Productive" if productive else "Standby"
+        line = f"  {name}: {label}"
+        if not productive and tracker.armed:
+            line += f" ({tracker.seconds_to_penalty(side):.0f}s)"
+        x = _left_x(panel, 0)
+        pygame.draw.circle(surf, dot, (x + 6, y + font.get_height() // 2), 5)
+        y = blit_left(surf, panel, font, y, line, dot)
+        y += 2
+    return y + 4
+
+
+def draw_standby_penalty_notices(
+    surf: pygame.Surface,
+    fonts: tuple[pygame.font.Font, pygame.font.Font],
+    notices: List["StandbyPenaltyNotice"],
+) -> None:
+    """On-screen banner when a chuck standby penalty hits the shift timer."""
+    if not notices:
+        return
+
+    from constants import CHUCK_STANDBY_NOTICE_S
+
+    f_title, f_sub = fonts
+    sw, _ = surf.get_size()
+    y = 58
+    for notice in notices:
+        side_name = "Left" if notice.side == "l" else "Right"
+        fade = min(1.0, max(0.0, notice.time_left / CHUCK_STANDBY_NOTICE_S))
+        pulse = 0.85 + 0.15 * fade
+        title = f"{side_name} chuck standby penalty"
+        detail = f"−{notice.amount_s:.0f}s shift time"
+        title_color = (
+            int(255 * pulse),
+            int(120 * pulse),
+            int(100 * pulse),
+        )
+        detail_color = (255, int(210 * pulse), int(170 * pulse))
+
+        title_s = f_title.render(title, True, title_color)
+        detail_s = f_sub.render(detail, True, detail_color)
+        pad_x, pad_y = 16, 10
+        bw = max(title_s.get_width(), detail_s.get_width()) + pad_x * 2
+        bh = title_s.get_height() + detail_s.get_height() + pad_y * 2 + 4
+        bx = sw // 2 - bw // 2
+        bg_alpha = int(210 * fade)
+        bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        pygame.draw.rect(bg, (48, 18, 18, bg_alpha), bg.get_rect(), border_radius=8)
+        pygame.draw.rect(bg, (220, 90, 70, int(255 * fade)), bg.get_rect(), 2, border_radius=8)
+        surf.blit(bg, (bx, y))
+        tx = sw // 2
+        surf.blit(title_s, (tx - title_s.get_width() // 2, y + pad_y))
+        surf.blit(
+            detail_s,
+            (tx - detail_s.get_width() // 2, y + pad_y + title_s.get_height() + 4),
+        )
+        y += bh + 8
+
+
 def draw_shift_hud(
     surf: pygame.Surface,
     panel: pygame.Rect,
@@ -131,6 +205,8 @@ def draw_shift_hud(
     rack_required: Optional["TestSpec"] = None,
     mhu_progress: Optional[float] = None,
     status_lines: Optional[List[str]] = None,
+    chuck_tracker: Optional["ChuckStandbyTracker"] = None,
+    penalty_flash: bool = False,
 ) -> None:
     """Timer, queue, rack config, and status on the left border panel."""
     from lab import test_label
@@ -155,11 +231,14 @@ def draw_shift_hud(
         f_ui,
         y,
         f"Shift: {max(0, shift_left):.0f}s",
-        (245, 248, 255),
+        (255, 130, 110) if penalty_flash else (245, 248, 255),
     )
     y += 4
     y = blit_left(surf, panel, f_ui, y, f"Done: {wafers_done}", (220, 225, 240))
-    y += 10
+    y += 8
+    if chuck_tracker is not None:
+        y = draw_chuck_status_panel(surf, panel, f_small, y, orders, chuck_tracker)
+    y += 2
     n = len(orders)
     header = "Queue:" if n == 0 else (f"Queue ({n}):" if n > 1 else "Queue (1):")
     y = blit_left(surf, panel, f_small, y, header, (255, 230, 180))

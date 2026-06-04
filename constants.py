@@ -20,6 +20,11 @@ INVENTORY_WAIT_S = 2.6
 CHAMBER_RUN_MIN_S = 10.0
 CHAMBER_RUN_MAX_S = 22.0
 
+# Chuck idle penalty: every 20s on standby costs 5s off the shift timer (after first wafer arrives).
+CHUCK_STANDBY_PENALTY_INTERVAL_S = 20.0
+CHUCK_STANDBY_PENALTY_S = 5.0
+CHUCK_STANDBY_NOTICE_S = 6.0
+
 # New wafer lots every 10–15 s (randomized)
 SPAWN_MIN_S = 10.0
 SPAWN_MAX_S = 15.0

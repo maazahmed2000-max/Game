@@ -26,10 +26,12 @@ from lab import walkable
 from lab import (
     TEST_CYCLE,
     Cell,
+    ChuckStatus,
     StationZone,
     TestSpec,
     WaferOrder,
     all_station_tiles,
+    chuck_status_for_side,
     config_rack_zones,
     mhu_zone,
     prober_chuck_zones,
@@ -321,6 +323,35 @@ def draw_progress_above_tile(
         caption,
         font,
     )
+
+
+def draw_chuck_status_badge(
+    surf: pygame.Surface,
+    view: IsoView,
+    col: float,
+    row: float,
+    status: ChuckStatus,
+    font: pygame.font.Font,
+    *,
+    side_label: str,
+) -> None:
+    productive = status == ChuckStatus.PRODUCTIVE
+    fill = (28, 72, 42) if productive else (72, 58, 22)
+    border = (70, 210, 100) if productive else (235, 200, 70)
+    text_color = (170, 255, 190) if productive else (255, 235, 150)
+    label = "PRODUCTIVE" if productive else "STANDBY"
+    caption = f"{side_label} · {label}"
+    cx, cy = view.center(col, row)
+    cy -= view.hh * 5.6
+    text = font.render(caption, True, text_color)
+    pad_x, pad_y = 7, 4
+    bx = int(cx - text.get_width() / 2 - pad_x)
+    by = int(cy - text.get_height() / 2 - pad_y)
+    bw = text.get_width() + pad_x * 2
+    bh = text.get_height() + pad_y * 2
+    pygame.draw.rect(surf, fill, (bx, by, bw, bh), border_radius=5)
+    pygame.draw.rect(surf, border, (bx, by, bw, bh), 2, border_radius=5)
+    surf.blit(text, (int(cx - text.get_width() / 2), int(cy - text.get_height() / 2)))
 
 
 def draw_floating_label(
@@ -754,6 +785,18 @@ def _draw_world_ui_overlays(
     from lab import TEST_CYCLE, chamber_order_on_side, test_label
 
     lay = get_layout()
+
+    for side, chuck_pos in (("l", lay.label_chuck_l()), ("r", lay.label_chuck_r())):
+        cc, cr = chuck_pos
+        draw_chuck_status_badge(
+            surf,
+            view,
+            cc,
+            cr,
+            chuck_status_for_side(orders, side),
+            font,
+            side_label="L" if side == "l" else "R",
+        )
 
     if mhu_order is not None and inv_prog > 0:
         mc, mr = lay.label_mhu()

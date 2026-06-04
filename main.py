@@ -38,6 +38,7 @@ from lab import (
     RECIPE_WAFER,
     TEST_CYCLE,
     Cell,
+    ChuckStandbyTracker,
     WaferOrder,
     default_map,
     find_walkable_spawn,
@@ -56,7 +57,14 @@ from lab import (
 )
 from player import Player
 from touch_controls import SoloTouch
-from ui import blit_centered, draw_editor_toggle, draw_left_hud_panel, draw_shift_hud, editor_toggle_rect
+from ui import (
+    blit_centered,
+    draw_editor_toggle,
+    draw_left_hud_panel,
+    draw_shift_hud,
+    draw_standby_penalty_notices,
+    editor_toggle_rect,
+)
 
 
 def font(size: int) -> pygame.font.Font:
@@ -204,6 +212,7 @@ async def run_shift(
     interact_cd = 0.0
     inv_prog = 0.0
     dial_by_side: dict[str, int] = {"l": 0, "r": 0}
+    chuck_standby = ChuckStandbyTracker()
     last_space = False
     map_editor = MapEditor() if DEBUG_MAP_EDITOR else None
     editor_enabled = False
@@ -292,6 +301,9 @@ async def run_shift(
             else:
                 map_editor.end_drag(commit=True)
                 cells = refresh_map_from_layout()
+
+        if not editing:
+            shift_left -= chuck_standby.tick(orders, dt)
 
         if not editing:
             player.update(cells, dx, dy, dt)
@@ -493,7 +505,10 @@ async def run_shift(
             rack_dial=rack_dial,
             rack_required=rack_required,
             status_lines=status or None,
+            chuck_tracker=chuck_standby,
+            penalty_flash=bool(chuck_standby.notices),
         )
+        draw_standby_penalty_notices(screen, (f_ui, f_small), chuck_standby.notices)
 
         hint = "WASD · Space = use · A/D = rack dial · Esc = menu"
         if DEBUG_MAP_EDITOR:

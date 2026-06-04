@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Literal, Optional, Tuple
 
 ProberSortOutcome = Literal["front", "behind", "strip"]
 ProberSide = Literal["l", "r"]
 
-from constants import CHAMBER_RUN_MAX_S, CHAMBER_RUN_MIN_S, COLS, ROWS
+from constants import (
+    CHAMBER_RUN_MAX_S,
+    CHAMBER_RUN_MIN_S,
+    CHUCK_STANDBY_NOTICE_S,
+    CHUCK_STANDBY_PENALTY_INTERVAL_S,
+    CHUCK_STANDBY_PENALTY_S,
+    COLS,
+    ROWS,
+)
 from dev_layout import ZoneDef, get_layout, lattice_cell_corners, point_in_lattice_cell
 
 
@@ -43,6 +51,11 @@ class TestSpec(Enum):
     OBAND = auto()
     CBAND = auto()
     OTHER = auto()
+
+
+class ChuckStatus(Enum):
+    PRODUCTIVE = auto()
+    STANDBY = auto()
 
 
 TEST_CYCLE: Tuple[TestSpec, ...] = (
@@ -568,6 +581,76 @@ def chamber_order_on_side(orders: List["WaferOrder"], side: ProberSide) -> Optio
         if o.chamber_started and o.prober_side == side:
             return o
     return None
+
+
+def chuck_status_for_side(orders: List["WaferOrder"], side: ProberSide) -> ChuckStatus:
+    """Green productive while a wafer is in chamber test; yellow standby otherwise."""
+    if chamber_order_on_side(orders, side) is not None:
+        return ChuckStatus.PRODUCTIVE
+    return ChuckStatus.STANDBY
+
+
+@dataclass
+class StandbyPenaltyNotice:
+    side: ProberSide
+    amount_s: float
+    time_left: float = CHUCK_STANDBY_NOTICE_S
+
+
+@dataclass
+class ChuckStandbyTracker:
+    """Tracks idle time per chuck and applies shift-timer penalties."""
+
+    elapsed: dict[str, float] = field(default_factory=lambda: {"l": 0.0, "r": 0.0})
+    penalty_blocks: dict[str, int] = field(default_factory=lambda: {"l": 0, "r": 0})
+    armed: bool = False
+    notices: List[StandbyPenaltyNotice] = field(default_factory=list)
+
+    def tick(self, orders: List["WaferOrder"], dt: float) -> float:
+        """Advance standby timers; return extra seconds to deduct from the shift."""
+        self._decay_notices(dt)
+        if orders and not self.armed:
+            self.armed = True
+        if not self.armed:
+            return 0.0
+
+        total = 0.0
+        for side in ("l", "r"):
+            if chuck_status_for_side(orders, side) == ChuckStatus.PRODUCTIVE:
+                self.elapsed[side] = 0.0
+                self.penalty_blocks[side] = 0
+                continue
+            self.elapsed[side] += dt
+            blocks = int(self.elapsed[side] // CHUCK_STANDBY_PENALTY_INTERVAL_S)
+            new_blocks = blocks - self.penalty_blocks[side]
+            if new_blocks > 0:
+                total += new_blocks * CHUCK_STANDBY_PENALTY_S
+                self.penalty_blocks[side] = blocks
+                self.notices.append(
+                    StandbyPenaltyNotice(
+                        side=side,
+                        amount_s=new_blocks * CHUCK_STANDBY_PENALTY_S,
+                    )
+                )
+        return total
+
+    def _decay_notices(self, dt: float) -> None:
+        alive: List[StandbyPenaltyNotice] = []
+        for notice in self.notices:
+            notice.time_left -= dt
+            if notice.time_left > 0:
+                alive.append(notice)
+        self.notices = alive
+
+    def seconds_to_penalty(self, side: ProberSide) -> float:
+        """Seconds until the next standby penalty tick."""
+        if not self.armed:
+            return CHUCK_STANDBY_PENALTY_INTERVAL_S
+        e = self.elapsed.get(side, 0.0)
+        if e < CHUCK_STANDBY_PENALTY_INTERVAL_S:
+            return CHUCK_STANDBY_PENALTY_INTERVAL_S - e
+        rem = e % CHUCK_STANDBY_PENALTY_INTERVAL_S
+        return 0.0 if rem == 0.0 else CHUCK_STANDBY_PENALTY_INTERVAL_S - rem
 
 
 def bench_order_on_side(
