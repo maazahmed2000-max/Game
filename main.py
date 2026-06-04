@@ -25,10 +25,10 @@ from constants import (
 )
 from display import (
     DisplayState,
-    WINDOW_FLAGS,
     create_game_surface,
+    handle_video_resize,
     logical_mouse_pos,
-    sync_display_from_screen,
+    present_frame,
 )
 from dev_layout import commit_layout, flush_layout_to_disk, get_layout, reload_layout
 from map_editor import MapEditor
@@ -182,7 +182,7 @@ async def run_menu(
             z = fn.render(label, True, (245, 247, 255))
             screen.blit(z, (rect.centerx - z.get_width() // 2, rect.centery - z.get_height() // 2))
 
-        pygame.display.flip()
+        present_frame(display, screen)
 
 
 async def run_shift(
@@ -198,8 +198,7 @@ async def run_shift(
     f_ui, f_small, f_btn = fonts
     f_world = font(14)
     reload_layout()
-    sync_display_from_screen(display, screen)
-    sw, sh = screen.get_size()
+    sw, sh = display.width, display.height
     assets.set_screen_size(sw, sh)
     view = make_iso_view_for_background(assets, sw, sh)
     cells = default_map()
@@ -232,14 +231,7 @@ async def run_shift(
 
         for event in pygame.event.get():
             if event.type == pygame.VIDEORESIZE:
-                sw, sh = max(320, event.w), max(480, event.h)
-                screen = pygame.display.set_mode((sw, sh), WINDOW_FLAGS)
-                sync_display_from_screen(display, screen)
-                assets.set_screen_size(sw, sh)
-                sticks.set_screen_size(sw, sh)
-                view = make_iso_view_for_background(assets, sw, sh)
-                toggle_rect = editor_toggle_rect(sw, sh)
-                cells = refresh_map_from_layout()
+                handle_video_resize(display, event.w, event.h)
             elif event.type == pygame.QUIT:
                 if map_editor is not None:
                     map_editor.end_drag(commit=True)
@@ -514,7 +506,7 @@ async def run_shift(
         if DEBUG_MAP_EDITOR:
             hint += " · Editor / M"
         blit_centered(screen, f_small, sh - 44, hint, (130, 135, 155))
-        pygame.display.flip()
+        present_frame(display, screen)
 
     finally:
         if map_editor is not None:
@@ -536,7 +528,7 @@ async def run_shift(
         r = f_ui.render(msg, True, (240, 245, 255))
         sw, sh = screen.get_size()
         screen.blit(r, (sw // 2 - r.get_width() // 2, sh // 2 - 40))
-        pygame.display.flip()
+        present_frame(display, screen)
 
     return screen, view
 
@@ -550,11 +542,10 @@ async def main() -> None:
     assets = GameAssets()
     assets.load()
     reload_layout()
-    sync_display_from_screen(display, screen)
-    sw, sh = screen.get_size()
+    sw, sh = display.width, display.height
     assets.set_screen_size(sw, sh)
     view = make_iso_view_for_background(assets, sw, sh)
-    sticks = SoloTouch(sw, sh)
+    sticks = SoloTouch(sw, sh, display=display)
     f_ui = font(22)
     f_small = font(17)
     f_btn = font(16)
