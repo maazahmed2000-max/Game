@@ -61,8 +61,15 @@ def apply_fixed_window_chrome() -> None:
         pass
 
 
+def sync_display_from_screen(display: DisplayState, screen: pygame.Surface) -> None:
+    """On web/resizable windows, keep logical size in sync with the real surface."""
+    if WINDOW_FLAGS != 0:
+        display.width, display.height = screen.get_size()
+
+
 def create_game_surface(display: DisplayState) -> pygame.Surface:
     screen = pygame.display.set_mode(display.size, WINDOW_FLAGS)
+    sync_display_from_screen(display, screen)
     apply_fixed_window_chrome()
     return screen
 

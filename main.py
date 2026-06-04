@@ -23,7 +23,13 @@ from constants import (
     SPAWN_MAX_S,
     SPAWN_MIN_S,
 )
-from display import DisplayState, create_game_surface, logical_mouse_pos
+from display import (
+    DisplayState,
+    WINDOW_FLAGS,
+    create_game_surface,
+    logical_mouse_pos,
+    sync_display_from_screen,
+)
 from dev_layout import commit_layout, flush_layout_to_disk, get_layout, reload_layout
 from map_editor import MapEditor
 from game_assets import GameAssets, make_iso_view_for_background
@@ -184,7 +190,10 @@ async def run_shift(
     f_ui, f_small, f_btn = fonts
     f_world = font(14)
     reload_layout()
-    view = make_iso_view_for_background(assets, display.width, display.height)
+    sync_display_from_screen(display, screen)
+    sw, sh = screen.get_size()
+    assets.set_screen_size(sw, sh)
+    view = make_iso_view_for_background(assets, sw, sh)
     cells = default_map()
     spawn_col, spawn_row = find_walkable_spawn(cells)
     player = Player(spawn_col, spawn_row)
@@ -213,7 +222,16 @@ async def run_shift(
         toggle_rect = editor_toggle_rect(sw, sh)
 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
+            if event.type == pygame.VIDEORESIZE:
+                sw, sh = max(320, event.w), max(480, event.h)
+                screen = pygame.display.set_mode((sw, sh), WINDOW_FLAGS)
+                sync_display_from_screen(display, screen)
+                assets.set_screen_size(sw, sh)
+                sticks.set_screen_size(sw, sh)
+                view = make_iso_view_for_background(assets, sw, sh)
+                toggle_rect = editor_toggle_rect(sw, sh)
+                cells = refresh_map_from_layout()
+            elif event.type == pygame.QUIT:
                 if map_editor is not None:
                     map_editor.end_drag(commit=True)
                 flush_layout_to_disk()
@@ -517,8 +535,11 @@ async def main() -> None:
     assets = GameAssets()
     assets.load()
     reload_layout()
-    view = make_iso_view_for_background(assets, display.width, display.height)
-    sticks = SoloTouch(display.width, display.height)
+    sync_display_from_screen(display, screen)
+    sw, sh = screen.get_size()
+    assets.set_screen_size(sw, sh)
+    view = make_iso_view_for_background(assets, sw, sh)
+    sticks = SoloTouch(sw, sh)
     f_ui = font(22)
     f_small = font(17)
     f_btn = font(16)

@@ -264,18 +264,18 @@ def make_iso_view_for_background(
     screen_w: int | None = None,
     screen_h: int | None = None,
 ) -> "IsoView":
-    """Fixed tile size; camera anchor centered in the window (prober may be offset on the floor)."""
-    from iso_render import IsoView
-    from lab import layout_camera_anchor
+    """Fit the full floor grid in the playable area; pin background to the layout anchor."""
+    from iso_render import _iso_view_in_rect
 
     sw = screen_w if screen_w is not None else assets._screen_w
     sh = screen_h if screen_h is not None else assets._screen_h
-    hw, hh, wall_h = 36.0, 21.0, 40.0
-    ac, ar = layout_camera_anchor()
-    center_x = sw * 0.5
-    center_y = sh * 0.5
-    ox = center_x - (ac - ar) * hw
-    oy = center_y - (ac + ar) * hh
-    view = IsoView(hw, hh, ox, oy, wall_h)
+    assets.set_screen_size(sw, sh)
+    view = _iso_view_in_rect(
+        assets.world_rect,
+        36.0,
+        21.0,
+        wall_h=40.0,
+        vertical_bias=0.52,
+    )
     assets.align_background_to_view(view)
     return view
