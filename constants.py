@@ -4,6 +4,8 @@ TILE = 48
 # Wide floor plan (corridor + bays), blueprint-style
 COLS = 28
 ROWS = 20
+# How far the play-area left wall can extend past column 0 (negative grid coords).
+WALL_LEFT_MIN = -8
 SCREEN_W = 1280
 SCREEN_H = 760
 FPS = 60
@@ -31,9 +33,9 @@ SPAWN_MAX_S = 15.0
 MAX_WAFER_QUEUE = 6
 
 # HUD / world progress bar widths (pixels)
-HUD_PROGRESS_BAR_W = 200
+HUD_PROGRESS_BAR_W = 168
 WORLD_PROGRESS_BAR_W = 110
-HUD_PANEL_WIDTH = 220
+HUD_PANEL_WIDTH = 188
 
 # Overlay walkable tiles when editor toggle is on (see in-game Editor switch).
 DEBUG_DRAW_WALKABLE = False

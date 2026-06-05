@@ -81,6 +81,41 @@ def default_tile_axes() -> Tuple[Vec2, Vec2]:
     return (1.0, 1.0), (1.0, -1.0)
 
 
+def axis_parallelogram_corners(
+    center: Vec2,
+    half_i: float,
+    half_j: float,
+    *,
+    axis_x: Vec2,
+    axis_y: Vec2,
+) -> ProberCorners:
+    """CCW parallelogram aligned to the skew tile axes."""
+    return [
+        lattice_point(center, axis_x, axis_y, -half_i, -half_j),
+        lattice_point(center, axis_x, axis_y, half_i, -half_j),
+        lattice_point(center, axis_x, axis_y, half_i, half_j),
+        lattice_point(center, axis_x, axis_y, -half_i, half_j),
+    ]
+
+
+def rect_to_corners(wl: float, wt: float, wr: float, wb: float) -> ProberCorners:
+    return [(wl, wt), (wr, wt), (wr, wb), (wl, wb)]
+
+
+def nudge_corners(corners: ProberCorners, dc: float, dr: float) -> ProberCorners:
+    return [(c + dc, r + dr) for c, r in corners]
+
+
+def default_play_bounds_corners() -> ProberCorners:
+    ax, ay = default_tile_axes()
+    return axis_parallelogram_corners((13.0, 10.0), 8.0, 5.0, axis_x=ax, axis_y=ay)
+
+
+def default_storage_corners() -> ProberCorners:
+    ax, ay = default_tile_axes()
+    return axis_parallelogram_corners((13.0, 10.0), 4.0, 4.0, axis_x=ax, axis_y=ay)
+
+
 def snap_to_lattice(
     gc: float,
     gr: float,
@@ -173,13 +208,8 @@ class ZoneDef:
 
 @dataclass
 class DevLayout:
-    wall_left: int = 2
-    wall_right: int = COLS - 3
-    wall_top: int = 2
-    wall_bottom: int = ROWS - 3
-
-    storage_c1: int = 9
-    storage_r1: int = 8
+    play_bounds_corners: ProberCorners = field(default_factory=default_play_bounds_corners)
+    storage_corners: ProberCorners = field(default_factory=default_storage_corners)
     receiving_booths: List[TileCoord] = field(default_factory=default_receiving_booths)
 
     spade_c0: int = 22
@@ -336,10 +366,20 @@ class DevLayout:
             return self.prober_cx, self.prober_cy
         return self.prober_cx + zd.dx, self.prober_cy + zd.dy
 
+    def storage_center(self) -> Vec2:
+        cs = self.storage_corners
+        return (sum(c for c, _ in cs) / len(cs), sum(r for _, r in cs) / len(cs))
+
+    def is_inside_play_bounds(self, col: int, row: int) -> bool:
+        return _point_in_convex_quad(col + 0.5, row + 0.5, self.play_bounds_corners)
+
+    def is_storage_cell(self, col: int, row: int) -> bool:
+        return _point_in_convex_quad(col + 0.5, row + 0.5, self.storage_corners)
+
     def label_storage(self) -> Vec2:
         if self.label_storage_c is not None and self.label_storage_r is not None:
             return self.label_storage_c, self.label_storage_r
-        return self.storage_c1 * 0.5, self.storage_r1 * 0.5
+        return self.storage_center()
 
     def label_rack_l(self) -> Vec2:
         if self.label_rack_l_c is not None and self.label_rack_l_r is not None:
@@ -404,6 +444,23 @@ def center_prober_stations_for_editor(lay: DevLayout) -> None:
     lay.zones = {k: ZoneDef(z.dx, z.dy, z.radius, z.step) for k, z in _default_zones().items()}
 
 
+def recenter_play_and_storage_bounds(lay: DevLayout) -> None:
+    """Reset purple play bounds (and storage data) centered on the camera anchor."""
+    center = lay.view_anchor()
+    lay.play_bounds_corners = axis_parallelogram_corners(
+        center, 8.0, 5.0, axis_x=lay.tile_axis_x, axis_y=lay.tile_axis_y
+    )
+    lay.storage_corners = axis_parallelogram_corners(
+        center, 4.0, 4.0, axis_x=lay.tile_axis_x, axis_y=lay.tile_axis_y
+    )
+
+
+def recenter_finished_checkpoint(lay: DevLayout) -> None:
+    """Move finished rack checkpoint back to the default visible spot for editing."""
+    lay.finished_c = 22
+    lay.finished_r = 10
+
+
 def center_all_editable_components(lay: DevLayout) -> None:
     """One-shot: prober, zones, tile origin, and label anchors — floor paint unchanged."""
     center_prober_stations_for_editor(lay)
@@ -435,17 +492,12 @@ def _nudge_layout_stations(lay: DevLayout, dc: float, dr: float, *, nudge_zone_o
     lay.tile_origin_c += dc
     lay.tile_origin_r += dr
 
-    lay.storage_c1 = max(0, min(COLS - 1, int(round(lay.storage_c1 + dc))))
-    lay.storage_r1 = max(0, min(ROWS - 1, int(round(lay.storage_r1 + dr))))
+    lay.play_bounds_corners = nudge_corners(lay.play_bounds_corners, dc, dr)
+    lay.storage_corners = nudge_corners(lay.storage_corners, dc, dr)
     lay.finished_c = max(0, min(COLS - 1, int(round(lay.finished_c + dc))))
     lay.finished_r = max(0, min(ROWS - 1, int(round(lay.finished_r + dr))))
     lay.spade_c0 = max(0, min(COLS - 1, int(round(lay.spade_c0 + dc))))
     lay.spade_r1 = max(0, min(ROWS - 1, int(round(lay.spade_r1 + dr))))
-
-    lay.wall_left = max(0, min(COLS - 1, int(round(lay.wall_left + dc))))
-    lay.wall_right = max(lay.wall_left + 2, min(COLS - 1, int(round(lay.wall_right + dc))))
-    lay.wall_top = max(0, min(ROWS - 1, int(round(lay.wall_top + dr))))
-    lay.wall_bottom = max(lay.wall_top + 2, min(ROWS - 1, int(round(lay.wall_bottom + dr))))
 
     lay.receiving_booths = [
         (
@@ -499,17 +551,12 @@ def apply_prober_anchor_drag(lay: DevLayout, start: DevLayout, dc: float, dr: fl
     lay.tile_origin_c = start.tile_origin_c + dc
     lay.tile_origin_r = start.tile_origin_r + dr
 
-    lay.storage_c1 = max(0, min(COLS - 1, int(round(start.storage_c1 + dc))))
-    lay.storage_r1 = max(0, min(ROWS - 1, int(round(start.storage_r1 + dr))))
+    lay.play_bounds_corners = nudge_corners(start.play_bounds_corners, dc, dr)
+    lay.storage_corners = nudge_corners(start.storage_corners, dc, dr)
     lay.finished_c = max(0, min(COLS - 1, int(round(start.finished_c + dc))))
     lay.finished_r = max(0, min(ROWS - 1, int(round(start.finished_r + dr))))
     lay.spade_c0 = max(0, min(COLS - 1, int(round(start.spade_c0 + dc))))
     lay.spade_r1 = max(0, min(ROWS - 1, int(round(start.spade_r1 + dr))))
-
-    lay.wall_left = max(0, min(COLS - 1, int(round(start.wall_left + dc))))
-    lay.wall_right = max(lay.wall_left + 2, min(COLS - 1, int(round(start.wall_right + dc))))
-    lay.wall_top = max(0, min(ROWS - 1, int(round(start.wall_top + dr))))
-    lay.wall_bottom = max(lay.wall_top + 2, min(ROWS - 1, int(round(start.wall_bottom + dr))))
 
     lay.receiving_booths = [
         (
@@ -587,6 +634,30 @@ def load_layout() -> DevLayout:
     if booths_raw is not None:
         receiving_booths = [(int(c), int(r)) for c, r in booths_raw]
 
+    play_raw = data.pop("play_bounds_corners", None)
+    storage_raw = data.pop("storage_corners", None)
+    if play_raw is None:
+        wl = float(data.pop("wall_left", 0))
+        wr = float(data.pop("wall_right", COLS))
+        wt = float(data.pop("wall_top", 2))
+        wb = float(data.pop("wall_bottom", ROWS))
+        play_bounds_corners = rect_to_corners(wl, wt, wr, wb)
+    else:
+        data.pop("wall_left", None)
+        data.pop("wall_right", None)
+        data.pop("wall_top", None)
+        data.pop("wall_bottom", None)
+        play_bounds_corners = [(float(c), float(r)) for c, r in play_raw]
+
+    if storage_raw is None:
+        sc1 = float(data.pop("storage_c1", 9))
+        sr1 = float(data.pop("storage_r1", 8))
+        storage_corners = [(0.0, 0.0), (sc1, 0.0), (sc1, sr1), (0.0, sr1)]
+    else:
+        data.pop("storage_c1", None)
+        data.pop("storage_r1", None)
+        storage_corners = [(float(c), float(r)) for c, r in storage_raw]
+
     return DevLayout(
         receiving_booths=receiving_booths,
         blocked_lattice=lattice,
@@ -594,27 +665,72 @@ def load_layout() -> DevLayout:
         blocked_tiles=blocked,
         prober_corners=corners,
         zones=zones,
+        play_bounds_corners=play_bounds_corners,
+        storage_corners=storage_corners,
         **data,
     )
 
 
-def save_layout(layout: DevLayout) -> None:
+def _write_layout_text(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 6) -> bool:
+    import time
+
+    for i in range(attempts):
+        if i:
+            time.sleep(0.04 * i)
+        try:
+            os.replace(src, dst)
+            return True
+        except PermissionError:
+            continue
+        except OSError as e:
+            if getattr(e, "winerror", None) == 5:
+                continue
+            raise
+    return False
+
+
+def save_layout(layout: DevLayout) -> bool:
+    """Persist layout; returns False if the file is locked (e.g. open in the IDE)."""
     payload: Dict[str, Any] = asdict(layout)
     payload["zones"] = {k: asdict(v) for k, v in layout.zones.items()}
     payload["blocked_lattice"] = [[i, j] for i, j in layout.blocked_lattice]
     payload["lattice_user_defined"] = layout.lattice_user_defined
     payload["receiving_booths"] = [[c, r] for c, r in layout.receiving_booths]
+    payload["play_bounds_corners"] = [list(p) for p in layout.play_bounds_corners]
+    payload["storage_corners"] = [list(p) for p in layout.storage_corners]
     payload.pop("blocked_tiles", None)
     payload["tile_axis_x"] = list(layout.tile_axis_x)
     payload["tile_axis_y"] = list(layout.tile_axis_y)
     payload.pop("prober_corners", None)
     text = json.dumps(payload, indent=2)
     tmp = LAYOUT_PATH.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, LAYOUT_PATH)
+    try:
+        _write_layout_text(tmp, text)
+    except OSError:
+        return False
+
+    if _replace_with_retry(tmp, LAYOUT_PATH):
+        return True
+
+    try:
+        _write_layout_text(LAYOUT_PATH, text)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        pass
+
+    # Keep .tmp so edits are not lost; caller still has in-memory layout.
+    return False
 
 
 def get_layout() -> DevLayout:
@@ -635,12 +751,12 @@ def apply_layout(layout: DevLayout) -> None:
     _layout = layout
 
 
-def commit_layout(layout: DevLayout) -> None:
+def commit_layout(layout: DevLayout) -> bool:
     """Apply in-memory layout and write dev_layout.json (editor changes persist)."""
     if layout.blocked_lattice:
         layout.lattice_user_defined = True
     apply_layout(layout)
-    save_layout(layout)
+    return save_layout(layout)
 
 
 def flush_layout_to_disk() -> None:

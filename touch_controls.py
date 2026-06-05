@@ -1,53 +1,33 @@
-"""On-screen stick + use button for one local player (mobile / web)."""
+"""On-screen direction buttons + use button for one local player (mobile / web)."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 
-
 Vec2 = Tuple[float, float]
-
-
-@dataclass
-class StickZone:
-    center_x: float
-    center_y: float
-    radius: float
-    dead: float = 0.12
-
-    def vec_from_point(self, px: float, py: float) -> Vec2:
-        dx = (px - self.center_x) / self.radius
-        dy = (py - self.center_y) / self.radius
-        mag = math.hypot(dx, dy)
-        if mag < self.dead:
-            return 0.0, 0.0
-        if mag > 1.0:
-            dx /= mag
-            dy /= mag
-        else:
-            scale = (mag - self.dead) / (1.0 - self.dead)
-            dx *= scale / max(mag, 1e-6)
-            dy *= scale / max(mag, 1e-6)
-        return dx, dy
+ButtonName = str
 
 
 @dataclass
 class SoloTouch:
-    """One virtual stick (bottom center) + Use (for the only local player)."""
+    """D-pad style buttons (bottom left) + Use (bottom right)."""
 
     screen_w: int
     screen_h: int
     margin: float = 22.0
-    radius: float = 78.0
+    button_size: int = 56
     display: object | None = None
-    stick: StickZone = field(init=False)
+    btn_up: pygame.Rect = field(init=False)
+    btn_down: pygame.Rect = field(init=False)
+    btn_left: pygame.Rect = field(init=False)
+    btn_right: pygame.Rect = field(init=False)
     use_rect: pygame.Rect = field(init=False)
-    _touch: Dict[int, Tuple[float, float]] = field(default_factory=dict)
-    _mouse_left: bool = False
+    _touch_button: Dict[int, ButtonName] = field(default_factory=dict)
+    _pressed: set[ButtonName] = field(default_factory=set)
     _use_next: bool = False
 
     def __post_init__(self) -> None:
@@ -59,13 +39,26 @@ class SoloTouch:
         self._layout_controls()
 
     def _layout_controls(self) -> None:
-        r = self.radius
         m = self.margin
-        cx = self.screen_w * 0.5
-        cy = self.screen_h - m - r
-        self.stick = StickZone(cx, cy, r)
+        bw = self.button_size
+        cx = self.screen_w * 0.38
+        cy = self.screen_h - m - bw * 1.5
+        gap = 4
+        self.btn_up = pygame.Rect(int(cx - bw // 2), int(cy - bw - gap), bw, bw)
+        self.btn_down = pygame.Rect(int(cx - bw // 2), int(cy + gap), bw, bw)
+        self.btn_left = pygame.Rect(int(cx - bw - gap), int(cy - bw // 2), bw, bw)
+        self.btn_right = pygame.Rect(int(cx + gap), int(cy - bw // 2), bw, bw)
         uw, uh = 100, 48
-        self.use_rect = pygame.Rect(int(cx + r + m), int(cy - uh * 0.5), uw, uh)
+        self.use_rect = pygame.Rect(int(self.screen_w - m - uw), int(cy - uh // 2), uw, uh)
+
+    def _button_rects(self) -> List[Tuple[ButtonName, pygame.Rect]]:
+        return [
+            ("up", self.btn_up),
+            ("down", self.btn_down),
+            ("left", self.btn_left),
+            ("right", self.btn_right),
+            ("use", self.use_rect),
+        ]
 
     def _pointer_pos(self, event: pygame.event.Event) -> tuple[float, float]:
         scaler = getattr(self.display, "scaler", None) if self.display is not None else None
@@ -78,6 +71,24 @@ class SoloTouch:
         lx, ly = logical_mouse_pos(event.pos)
         return float(lx), float(ly)
 
+    def _button_at(self, x: float, y: float) -> Optional[ButtonName]:
+        for name, rect in self._button_rects():
+            if rect.collidepoint(x, y):
+                return name
+        return None
+
+    def _press_button(self, finger_id: int, name: ButtonName) -> None:
+        self._touch_button[finger_id] = name
+        if name == "use":
+            self._use_next = True
+        else:
+            self._pressed.add(name)
+
+    def _release_finger(self, finger_id: int) -> None:
+        name = self._touch_button.pop(finger_id, None)
+        if name and name != "use":
+            self._pressed.discard(name)
+
     def handle_event(self, event: pygame.event.Event, *, ignore_mouse: bool = False) -> None:
         if ignore_mouse and event.type in (
             pygame.MOUSEBUTTONDOWN,
@@ -87,29 +98,30 @@ class SoloTouch:
             return
         if event.type == pygame.FINGERDOWN:
             x, y = self._pointer_pos(event)
-            self._touch[event.finger_id] = (x, y)
-            self._try_use_tap(x, y)
+            btn = self._button_at(x, y)
+            if btn is not None:
+                self._press_button(event.finger_id, btn)
         elif event.type == pygame.FINGERMOTION:
-            if event.finger_id in self._touch:
-                x, y = self._pointer_pos(event)
-                self._touch[event.finger_id] = (x, y)
+            if event.finger_id not in self._touch_button:
+                return
+            old = self._touch_button[event.finger_id]
+            if old != "use":
+                self._pressed.discard(old)
+            x, y = self._pointer_pos(event)
+            btn = self._button_at(x, y)
+            if btn is not None:
+                self._press_button(event.finger_id, btn)
+            else:
+                self._touch_button.pop(event.finger_id, None)
         elif event.type == pygame.FINGERUP:
-            self._touch.pop(event.finger_id, None)
+            self._release_finger(event.finger_id)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self._mouse_left = True
             x, y = self._pointer_pos(event)
-            self._touch[-1] = (x, y)
-            self._try_use_tap(x, y)
-        elif event.type == pygame.MOUSEMOTION and self._mouse_left:
-            x, y = self._pointer_pos(event)
-            self._touch[-1] = (x, y)
+            btn = self._button_at(x, y)
+            if btn is not None:
+                self._press_button(-1, btn)
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            self._mouse_left = False
-            self._touch.pop(-1, None)
-
-    def _try_use_tap(self, x: float, y: float) -> None:
-        if self.use_rect.collidepoint(x, y):
-            self._use_next = True
+            self._release_finger(-1)
 
     def pop_use(self) -> bool:
         u = self._use_next
@@ -117,33 +129,42 @@ class SoloTouch:
         return u
 
     def vector(self) -> Vec2:
-        pts: List[Tuple[float, float]] = []
-        reach = self.radius * 1.3
-        for px, py in self._touch.values():
-            if math.hypot(px - self.stick.center_x, py - self.stick.center_y) <= reach:
-                pts.append((px, py))
+        dx = dy = 0.0
+        if "right" in self._pressed:
+            dx += 1.0
+        if "left" in self._pressed:
+            dx -= 1.0
+        if "down" in self._pressed:
+            dy += 1.0
+        if "up" in self._pressed:
+            dy -= 1.0
+        mag = math.hypot(dx, dy)
+        if mag > 1.0:
+            dx /= mag
+            dy /= mag
+        return dx, dy
 
-        if not pts:
-            return 0.0, 0.0
-        sx = sy = 0.0
-        for px, py in pts:
-            vx, vy = self.stick.vec_from_point(px, py)
-            sx += vx
-            sy += vy
-        n = float(len(pts))
-        return sx / n, sy / n
+    def _draw_button(
+        self,
+        surf: pygame.Surface,
+        rect: pygame.Rect,
+        label: str,
+        font: pygame.font.Font,
+        *,
+        pressed: bool,
+    ) -> None:
+        overlay = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        fill = (70, 110, 180, 170) if pressed else (40, 44, 58, 200)
+        overlay.fill(fill)
+        surf.blit(overlay, rect.topleft)
+        border = (140, 180, 255) if pressed else (200, 200, 220)
+        pygame.draw.rect(surf, border, rect, 2, border_radius=6)
+        t = font.render(label, True, (235, 235, 245))
+        surf.blit(t, (rect.centerx - t.get_width() // 2, rect.centery - t.get_height() // 2))
 
     def draw(self, surf: pygame.Surface, font: pygame.font.Font) -> None:
-        z = self.stick
-        s = pygame.Surface((int(z.radius * 2 + 4), int(z.radius * 2 + 4)), pygame.SRCALPHA)
-        cx, cy = z.radius + 2, z.radius + 2
-        pygame.draw.circle(s, (80, 120, 200, 90), (int(cx), int(cy)), int(z.radius))
-        pygame.draw.circle(s, (255, 255, 255, 55), (int(cx), int(cy)), int(z.radius), 2)
-        surf.blit(s, (int(z.center_x - z.radius - 2), int(z.center_y - z.radius - 2)))
-
-        overlay = pygame.Surface((self.use_rect.w, self.use_rect.h), pygame.SRCALPHA)
-        overlay.fill((40, 44, 58, 200))
-        surf.blit(overlay, self.use_rect.topleft)
-        pygame.draw.rect(surf, (200, 200, 220), self.use_rect, 2)
-        t = font.render("Use", True, (235, 235, 245))
-        surf.blit(t, (self.use_rect.centerx - t.get_width() // 2, self.use_rect.centery - t.get_height() // 2))
+        self._draw_button(surf, self.btn_up, "▲", font, pressed="up" in self._pressed)
+        self._draw_button(surf, self.btn_down, "▼", font, pressed="down" in self._pressed)
+        self._draw_button(surf, self.btn_left, "◀", font, pressed="left" in self._pressed)
+        self._draw_button(surf, self.btn_right, "▶", font, pressed="right" in self._pressed)
+        self._draw_button(surf, self.use_rect, "Use", font, pressed=False)

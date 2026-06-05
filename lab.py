@@ -285,6 +285,7 @@ def player_near_step(
     order: "WaferOrder",
     step: Cell,
     radius: float = INTERACT_RADIUS,
+    orders: Optional[List["WaferOrder"]] = None,
 ) -> bool:
     del radius
     if step == Cell.RECEIVING:
@@ -293,6 +294,8 @@ def player_near_step(
         return near_mhu(col, row)
     side = order.prober_side
     if step == Cell.PROBER_LOAD:
+        if orders is not None:
+            return resolve_load_side_for_player(col, row, orders, order) is not None
         if side:
             return player_near_zone_id(col, row, f"load_{side}")
         return near_step_zone(col, row, step)
@@ -302,6 +305,10 @@ def player_near_step(
         return player_near_zone_id(col, row, "rack_l") or player_near_zone_id(col, row, "rack_r")
     if step == Cell.TEST_CHAMBER:
         if side:
+            if orders is not None and chuck_in_test(orders, side):
+                running = chamber_order_on_side(orders, side)
+                if running is not order:
+                    return False
             return player_near_zone_id(col, row, f"chuck_{side}")
         return player_near_zone_id(col, row, "chuck_l") or player_near_zone_id(col, row, "chuck_r")
     if step == Cell.FINISHED_RACK:
@@ -309,24 +316,9 @@ def player_near_step(
     return in_vicinity_of_station(cells, col, row, step)
 
 
-def _storage_blocked(col: int, row: int) -> bool:
-    """STORAGE shelving — not walkable through the rack."""
-    lay = get_layout()
-    return col <= lay.storage_c1 and row <= lay.storage_r1
-
-
 def _structural_blocked(col: int, row: int) -> bool:
-    """Fixed map geometry (walls, storage, spade) — not the painted skew lattice."""
-    lay = get_layout()
-    if col <= lay.wall_left or col >= lay.wall_right:
-        return True
-    if row <= lay.wall_top or row >= lay.wall_bottom:
-        return True
-    if _storage_blocked(col, row):
-        return True
-    if col >= lay.spade_c0 and row <= lay.spade_r1:
-        return True
-    return False
+    """Fixed map geometry (play bounds) — not the painted skew lattice."""
+    return not get_layout().is_inside_play_bounds(col, row)
 
 
 _STATION_CELLS = frozenset(
@@ -435,6 +427,7 @@ def step_destination(
     order: WaferOrder,
     *,
     carrying: bool,
+    orders: Optional[List["WaferOrder"]] = None,
 ) -> Optional[Tuple[int, int]]:
     """Grid tile the player should head to for the current recipe step."""
     exp = order.next_expected()
@@ -448,7 +441,7 @@ def step_destination(
         return int(round(z.col)), int(round(z.row))
     if exp == Cell.PROBER_LOAD and side:
         z = zone_by_id(f"load_{side}")
-        if z:
+        if z and (orders is None or not chuck_occupied(orders, side)):
             return int(round(z.col)), int(round(z.row))
     if exp == Cell.TEST_BENCH and side:
         z = zone_by_id(f"rack_{side}")
@@ -459,6 +452,13 @@ def step_destination(
         if z:
             return int(round(z.col)), int(round(z.row))
     if exp in (Cell.PROBER_LOAD, Cell.TEST_BENCH, Cell.TEST_CHAMBER):
+        if exp == Cell.PROBER_LOAD and orders is not None:
+            for side_pick in ("l", "r"):
+                if chuck_occupied(orders, side_pick):
+                    continue
+                z = zone_by_id(f"load_{side_pick}")
+                if z:
+                    return int(round(z.col)), int(round(z.row))
         for z in prober_station_zones():
             if z.step == exp:
                 return int(round(z.col)), int(round(z.row))
@@ -544,11 +544,15 @@ class WaferOrder:
         """Final lot type only (Overcooked-style ticket, not recipe steps)."""
         return test_label(self.required)
 
-    def start_chamber_run(self) -> None:
+    def start_chamber_run(self, orders: Optional[List["WaferOrder"]] = None) -> None:
         if self.next_expected() != Cell.TEST_CHAMBER or self.chamber_started:
             return
         if self.prober_side is None:
             return
+        if orders is not None and chuck_in_test(orders, self.prober_side):
+            running = chamber_order_on_side(orders, self.prober_side)
+            if running is not None and running is not self:
+                return
         self.chamber_started = True
         self.chamber_elapsed = 0.0
         self.chamber_duration = random.uniform(CHAMBER_RUN_MIN_S, CHAMBER_RUN_MAX_S)
@@ -581,6 +585,63 @@ def chamber_order_on_side(orders: List["WaferOrder"], side: ProberSide) -> Optio
         if o.chamber_started and o.prober_side == side:
             return o
     return None
+
+
+def chuck_in_test(orders: List["WaferOrder"], side: ProberSide) -> bool:
+    """True while that chuck is running a chamber test."""
+    return chamber_order_on_side(orders, side) is not None
+
+
+def order_on_chuck(orders: List["WaferOrder"], side: ProberSide) -> Optional["WaferOrder"]:
+    """Wafer loaded on this chuck and not yet finished chamber test."""
+    for o in orders:
+        if o.prober_side != side:
+            continue
+        if Cell.PROBER_LOAD not in o.completed_steps:
+            continue
+        if Cell.TEST_CHAMBER in o.completed_steps:
+            continue
+        return o
+    return None
+
+
+def chuck_occupied(orders: List["WaferOrder"], side: ProberSide) -> bool:
+    """True while a wafer is on this chuck's load/test pipeline."""
+    return order_on_chuck(orders, side) is not None
+
+
+def nearest_available_load_side(
+    col: float,
+    row: float,
+    orders: List["WaferOrder"],
+) -> Optional[ProberSide]:
+    """Nearest load pad whose chuck is free."""
+    best: tuple[float, ProberSide] | None = None
+    for side in ("l", "r"):
+        if chuck_occupied(orders, side):
+            continue
+        z = zone_by_id(f"load_{side}")
+        if z is None:
+            continue
+        d = (col - z.col) ** 2 + (row - z.row) ** 2
+        if best is None or d < best[0]:
+            best = (d, side)
+    return best[1] if best is not None else None
+
+
+def resolve_load_side_for_player(
+    col: float,
+    row: float,
+    orders: List["WaferOrder"],
+    order: "WaferOrder",
+) -> Optional[ProberSide]:
+    """Load pad the player can use for this order; None if chuck is busy."""
+    if order.prober_side:
+        side = order.prober_side
+        if player_near_zone_id(col, row, f"load_{side}") and not chuck_occupied(orders, side):
+            return side
+        return None
+    return nearest_available_load_side(col, row, orders)
 
 
 def chuck_status_for_side(orders: List["WaferOrder"], side: ProberSide) -> ChuckStatus:
@@ -686,7 +747,7 @@ def gameplay_focus_order(
             continue
         if exp == Cell.TEST_CHAMBER and o.chamber_started:
             continue
-        if player_near_step(cells, col, row, o, exp):
+        if player_near_step(cells, col, row, o, exp, orders=orders):
             return o
     for o in orders:
         exp = o.next_expected()

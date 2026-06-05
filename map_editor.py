@@ -101,10 +101,10 @@ class MapEditor:
             self.end_drag(commit=True)
             self.persist()
 
-    def persist(self) -> None:
+    def persist(self) -> bool:
         """Write current editor layout to dev_layout.json."""
         apply_layout(self.layout)
-        commit_layout(self.layout)
+        return commit_layout(self.layout)
 
     def end_drag(self, *, commit: bool = True) -> None:
         if self._drag_id and commit:
@@ -178,15 +178,8 @@ class MapEditor:
             return self._label_handles(layout)
 
         h: List[Handle] = []
-        wl, wr, wt, wb = layout.wall_left, layout.wall_right, layout.wall_top, layout.wall_bottom
-        h.append(("wall_l", wl + 0.5, (wt + wb) * 0.5))
-        h.append(("wall_r", wr - 0.5, (wt + wb) * 0.5))
-        h.append(("wall_t", (wl + wr) * 0.5, wt + 0.5))
-        h.append(("wall_b", (wl + wr) * 0.5, wb - 0.5))
-
-        if self.selected == "storage":
-            h.append(("storage_br", layout.storage_c1 + 0.5, layout.storage_r1 + 0.5))
-            h.append(("storage_tl", 0.5, 0.5))
+        for i, (c, r) in enumerate(layout.play_bounds_corners):
+            h.append((f"play_c:{i}", c, r))
 
         if self.selected == "receiving":
             booths = layout.receiving_booths
@@ -209,8 +202,10 @@ class MapEditor:
             nr = layout.prober_sort_near_radius
             h.append(("prober_sort_r", pc + nr, pr))
 
-        h.append(("spade_tl", layout.spade_c0 + 0.5, layout.wall_top + 0.5))
-        h.append(("spade_br", COLS - 1.5, layout.spade_r1 + 0.5))
+        if self.selected == "spade":
+            play_tl = layout.play_bounds_corners[0]
+            h.append(("spade_tl", layout.spade_c0 + 0.5, play_tl[1]))
+            h.append(("spade_br", COLS - 1.5, layout.spade_r1 + 0.5))
         h.append(("finished", layout.finished_c, layout.finished_r))
 
         for zid, zd in layout.zones.items():
@@ -308,9 +303,7 @@ class MapEditor:
     def _handle_selected(self, hid: str) -> bool:
         if self.selected == "axes" and hid.startswith("axis_"):
             return True
-        if self.selected == "walls" and hid.startswith("wall_"):
-            return True
-        if self.selected == "storage" and hid.startswith("storage_"):
+        if hid.startswith("play_c:"):
             return True
         if self.selected == "receiving" and (hid == "receiving_all" or hid.startswith("receiving:")):
             return True
@@ -399,21 +392,18 @@ class MapEditor:
         dc, dr = gc - ac, gr - ar
         lay = self.layout
 
-        if hid == "wall_l":
-            lay.wall_left = max(0, min(start.wall_left + int(round(dc)), lay.wall_right - 2))
-        elif hid == "wall_r":
-            lay.wall_right = max(lay.wall_left + 2, min(COLS - 1, start.wall_right + int(round(dc))))
-        elif hid == "wall_t":
-            lay.wall_top = max(0, min(start.wall_top + int(round(dr)), lay.wall_bottom - 2))
-        elif hid == "wall_b":
-            lay.wall_bottom = max(lay.wall_top + 2, min(ROWS - 1, start.wall_bottom + int(round(dr))))
-
-        elif hid == "storage_br":
-            lay.storage_c1 = max(0, min(COLS - 1, start.storage_c1 + int(round(dc))))
-            lay.storage_r1 = max(0, min(ROWS - 1, start.storage_r1 + int(round(dr))))
-        elif hid == "storage_tl":
-            lay.storage_c1 = max(1, min(start.storage_c1 - int(round(dc)), COLS - 1))
-            lay.storage_r1 = max(1, min(start.storage_r1 - int(round(dr)), ROWS - 1))
+        if hid.startswith("play_c:"):
+            idx = int(hid.split(":")[1])
+            corners = list(lay.play_bounds_corners)
+            sc, sr = start.play_bounds_corners[idx]
+            corners[idx] = (sc + dc, sr + dr)
+            lay.play_bounds_corners = corners
+        elif hid.startswith("storage_c:"):
+            idx = int(hid.split(":")[1])
+            corners = list(lay.storage_corners)
+            sc, sr = start.storage_corners[idx]
+            corners[idx] = (sc + dc, sr + dr)
+            lay.storage_corners = corners
 
         elif hid == "label_storage":
             sc, sr = start.label_storage()
@@ -740,8 +730,8 @@ class MapEditor:
         if self.selected == "tiles":
             hover = self._snap_lattice_at(view, logical_mouse_pos(pygame.mouse.get_pos()))
         layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-        for i in range(-28, 29):
-            for j in range(-28, 29):
+        for i in range(-32, 33):
+            for j in range(-32, 33):
                 wc, wr = lay.cell_center(i, j)
                 ic, ir = int(round(wc)), int(round(wr))
                 if not (0 <= ic < COLS and 0 <= ir < ROWS):
@@ -763,30 +753,21 @@ class MapEditor:
         if not DEBUG_MAP_EDITOR or not enabled:
             return
         lay = self.layout
-        wl, wr, wt, wb = lay.wall_left, lay.wall_right, lay.wall_top, lay.wall_bottom
 
-        def rect_outline(c0: float, r0: float, c1: float, r1: float, color: Tuple[int, int, int]) -> None:
-            pts = [
-                view.center(c0, r0),
-                view.center(c1, r0),
-                view.center(c1, r1),
-                view.center(c0, r1),
-            ]
+        def quad_outline(corners: List[Tuple[float, float]], color: Tuple[int, int, int]) -> None:
+            pts = [view.center(c, r) for c, r in corners]
             pygame.draw.lines(surf, color, True, [(int(p[0]), int(p[1])) for p in pts], 2)
 
         if self.selected in ("tiles", "axes"):
             self._draw_walkable_lattice(surf, view, lay)
-            self._draw_tile_axes(surf, view, font, lay)
         if self.selected == "prober_front":
             self._draw_prober_front(surf, view, font, lay)
 
+        quad_outline(lay.play_bounds_corners, (180, 100, 255))
+
         if self.selected not in ("tiles", "axes", "labels"):
-            rect_outline(wl, wt, wr, wb, (180, 100, 255))
-            if self.selected == "storage":
-                rect_outline(0, 0, lay.storage_c1, lay.storage_r1, (230, 190, 70))
             if self.selected == "receiving":
                 self._draw_receiving_booths(surf, view, lay)
-            rect_outline(lay.spade_c0, wt, COLS - 1, lay.spade_r1, (200, 120, 120))
             self._draw_walkable_lattice(surf, view, lay)
 
         zone_colors = {
@@ -825,12 +806,18 @@ class MapEditor:
                 sx, sy = self._label_screen_xy(view, col, row, lift=lift)
                 color = (120, 255, 220) if self._drag_id == hid else (80, 220, 200)
                 radius = 10
+            elif hid.startswith("play_c:"):
+                sx, sy = view.center(col, row)
+                color = (255, 220, 120) if self._drag_id == hid else (200, 140, 255)
+                radius = 9
             else:
                 sx, sy = view.center(col, row)
                 color = (255, 255, 120) if self._handle_selected(hid) else (255, 255, 255)
                 radius = 7
             pygame.draw.circle(surf, color, (int(sx), int(sy)), radius)
             pygame.draw.circle(surf, (20, 20, 30), (int(sx), int(sy)), radius, 2)
+
+        self._draw_tile_axes(surf, view, font, lay)
 
         n_blocked = len(lay.blocked_lattice)
         y = surf.get_height() - 112
@@ -861,7 +848,7 @@ class MapEditor:
                 "Drag UI labels (storage queue, racks, prober bar, MHU) — preview stays visible"
             )
         else:
-            lines.append("Drag handles  |  [ ] zone radius when a zone is selected")
+            lines.append("Drag purple corner handles to resize play area  |  [ ] zone radius when a zone is selected")
         sw = surf.get_width()
         for line in lines:
             t = font.render(line, True, (255, 220, 140))

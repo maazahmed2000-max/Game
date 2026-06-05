@@ -7,13 +7,13 @@ from typing import Dict, Tuple
 
 import pygame
 
-from constants import SCREEN_H, SCREEN_W
+from constants import SCREEN_H, SCREEN_W, HUD_PANEL_WIDTH
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 FrameKey = Tuple[int, str]  # (operator_row, pose_name)
 
-OPERATOR_HEIGHT_FACTOR = 6.4
+OPERATOR_HEIGHT_FACTOR = 7.0
 PROBER_WIDTH_FACTOR = 15.5
 OPERATOR_COUNT = 2
 OPERATOR_NAMES: Tuple[str, ...] = ("Martin", "Katelyn")
@@ -144,10 +144,11 @@ class GameAssets:
 
     @property
     def world_rect(self) -> pygame.Rect:
+        """Playable band to the right of the left HUD strip."""
         return pygame.Rect(
-            0,
+            HUD_PANEL_WIDTH,
             self.WORLD_TOP,
-            self._screen_w,
+            max(320, self._screen_w - HUD_PANEL_WIDTH),
             self._screen_h - self.WORLD_TOP - self.FOOT_BAR,
         )
 
@@ -177,6 +178,14 @@ class GameAssets:
         anchor_u, anchor_v = 0.48, 0.58
         bx = int(sx - w * anchor_u)
         by = int(sy - h * anchor_v)
+        if bx < wr.x:
+            bx = wr.x
+        if by < wr.y:
+            by = wr.y
+        if bx + w > wr.right:
+            bx = wr.right - w
+        if by + h > wr.bottom:
+            by = wr.bottom - h
         self.bg_rect = pygame.Rect(bx, by, w, h)
         self.background = pygame.transform.smoothscale(
             self._bg_raw, (w, h)
@@ -192,8 +201,8 @@ class GameAssets:
         stations_raw = _load_rgba(ASSETS_DIR / "stations.png", colorkey=WHITE_KEY)
         self.stations = _trim_visible(stations_raw)
 
-        ops_l = _load_rgba(ASSETS_DIR / "operators.png", key_black=True)
-        ops_r = _load_rgba(ASSETS_DIR / "operators_right.png", key_black=True)
+        ops_l = _load_rgba(ASSETS_DIR / "operators.png", colorkey=WHITE_KEY)
+        ops_r = _load_rgba(ASSETS_DIR / "operators_right.png", colorkey=WHITE_KEY)
         self._ops_left = _slice_operator_sheet(ops_l)
         self._ops_right = _slice_operator_sheet(ops_r)
 

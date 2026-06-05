@@ -34,7 +34,7 @@ def draw_left_hud_panel(surf: pygame.Surface, height: int) -> pygame.Rect:
 
 
 def _left_x(panel: pygame.Rect, width: int) -> int:
-    return panel.x + 12
+    return panel.x + 10
 
 
 def blit_left(
@@ -44,10 +44,16 @@ def blit_left(
     y: int,
     text: str,
     color: tuple[int, int, int],
+    *,
+    shadow: bool = True,
 ) -> int:
+    x = _left_x(panel, 0)
+    if shadow:
+        shadow_line = font.render(text, True, (0, 0, 0))
+        surf.blit(shadow_line, (x + 1, y + 1))
     line = font.render(text, True, color)
-    surf.blit(line, (_left_x(panel, line.get_width()), y))
-    return y + line.get_height()
+    surf.blit(line, (x, y))
+    return y + line.get_height() + 3
 
 
 def draw_editor_toggle(
@@ -84,14 +90,14 @@ def draw_hud_progress_bar(
     bar_color: tuple[int, int, int] = (120, 180, 255),
     width: int = HUD_PROGRESS_BAR_W,
 ) -> int:
-    bar_h = 12
-    bar_w = min(width, panel.width - 24)
-    y = blit_left(surf, panel, font, y, caption, (200, 215, 235)) + 4
+    bar_h = 16
+    bar_w = min(width, panel.width - 28)
+    y = blit_left(surf, panel, font, y, caption, (215, 225, 245)) + 6
     x = _left_x(panel, bar_w)
     pygame.draw.rect(surf, (50, 55, 70), (x, y, bar_w, bar_h), border_radius=4)
     fw = max(4, int(bar_w * min(1.0, max(0.0, progress))))
     pygame.draw.rect(surf, bar_color, (x, y, fw, bar_h), border_radius=4)
-    return y + bar_h + 8
+    return y + bar_h + 10
 
 
 def draw_rack_config_panel(
@@ -103,19 +109,19 @@ def draw_rack_config_panel(
     dial_label: str,
     required_label: str,
 ) -> int:
-    y = blit_left(surf, panel, font, y, f"{side_label} rack config", (180, 230, 200))
-    y += 2
-    y = blit_left(surf, panel, font, y, f"Dial: [{dial_label}]", (160, 230, 200))
-    y += 2
+    y = blit_left(surf, panel, font, y, f"{side_label} rack config", (190, 240, 210))
+    y += 4
+    y = blit_left(surf, panel, font, y, f"Dial: [{dial_label}]", (175, 235, 205))
+    y += 4
     y = blit_left(
         surf,
         panel,
         font,
         y,
         f"Space when matches {required_label}",
-        (140, 200, 180),
+        (155, 210, 190),
     )
-    return y + 6
+    return y + 8
 
 
 def draw_chuck_status_panel(
@@ -128,21 +134,21 @@ def draw_chuck_status_panel(
 ) -> int:
     from lab import ChuckStatus, chuck_status_for_side
 
-    y = blit_left(surf, panel, font, y, "Chucks", (200, 210, 230))
-    y += 2
+    y = blit_left(surf, panel, font, y, "Chucks", (215, 225, 245))
+    y += 4
     for side, name in (("l", "Left"), ("r", "Right")):
         status = chuck_status_for_side(orders, side)
         productive = status == ChuckStatus.PRODUCTIVE
-        dot = (70, 210, 100) if productive else (235, 200, 70)
+        dot = (70, 220, 110) if productive else (245, 210, 80)
         label = "Productive" if productive else "Standby"
         line = f"  {name}: {label}"
         if not productive and tracker.armed:
             line += f" ({tracker.seconds_to_penalty(side):.0f}s)"
         x = _left_x(panel, 0)
-        pygame.draw.circle(surf, dot, (x + 6, y + font.get_height() // 2), 5)
+        pygame.draw.circle(surf, dot, (x + 7, y + font.get_height() // 2), 6)
         y = blit_left(surf, panel, font, y, line, dot)
         y += 2
-    return y + 4
+    return y + 6
 
 
 def draw_standby_penalty_notices(
@@ -157,8 +163,8 @@ def draw_standby_penalty_notices(
     from constants import CHUCK_STANDBY_NOTICE_S
 
     f_title, f_sub = fonts
-    sw, _ = surf.get_size()
-    y = 58
+    sw, sh = surf.get_size()
+    y = sh - 200
     for notice in notices:
         side_name = "Left" if notice.side == "l" else "Right"
         fade = min(1.0, max(0.0, notice.time_left / CHUCK_STANDBY_NOTICE_S))
@@ -174,22 +180,23 @@ def draw_standby_penalty_notices(
 
         title_s = f_title.render(title, True, title_color)
         detail_s = f_sub.render(detail, True, detail_color)
-        pad_x, pad_y = 16, 10
+        pad_x, pad_y = 10, 6
         bw = max(title_s.get_width(), detail_s.get_width()) + pad_x * 2
-        bh = title_s.get_height() + detail_s.get_height() + pad_y * 2 + 4
+        bh = title_s.get_height() + detail_s.get_height() + pad_y * 2 + 2
         bx = sw // 2 - bw // 2
         bg_alpha = int(210 * fade)
         bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
-        pygame.draw.rect(bg, (48, 18, 18, bg_alpha), bg.get_rect(), border_radius=8)
-        pygame.draw.rect(bg, (220, 90, 70, int(255 * fade)), bg.get_rect(), 2, border_radius=8)
+        pygame.draw.rect(bg, (48, 18, 18, bg_alpha), bg.get_rect(), border_radius=6)
+        pygame.draw.rect(bg, (220, 90, 70, int(255 * fade)), bg.get_rect(), 1, border_radius=6)
+        y -= bh
         surf.blit(bg, (bx, y))
         tx = sw // 2
         surf.blit(title_s, (tx - title_s.get_width() // 2, y + pad_y))
         surf.blit(
             detail_s,
-            (tx - detail_s.get_width() // 2, y + pad_y + title_s.get_height() + 4),
+            (tx - detail_s.get_width() // 2, y + pad_y + title_s.get_height() + 2),
         )
-        y += bh + 8
+        y -= 6
 
 
 def draw_shift_hud(
@@ -212,7 +219,7 @@ def draw_shift_hud(
     from lab import test_label
 
     f_ui, f_small = fonts
-    y = 14
+    y = 6
     if rack_side and rack_dial is not None and rack_required is not None:
         side_name = "Left" if rack_side == "l" else "Right"
         y = draw_rack_config_panel(
@@ -231,20 +238,20 @@ def draw_shift_hud(
         f_ui,
         y,
         f"Shift: {max(0, shift_left):.0f}s",
-        (255, 130, 110) if penalty_flash else (245, 248, 255),
+        (255, 140, 120) if penalty_flash else (250, 252, 255),
     )
-    y += 4
-    y = blit_left(surf, panel, f_ui, y, f"Done: {wafers_done}", (220, 225, 240))
-    y += 8
+    y += 6
+    y = blit_left(surf, panel, f_ui, y, f"Done: {wafers_done}", (230, 235, 248))
+    y += 10
     if chuck_tracker is not None:
         y = draw_chuck_status_panel(surf, panel, f_small, y, orders, chuck_tracker)
     y += 2
     n = len(orders)
     header = "Queue:" if n == 0 else (f"Queue ({n}):" if n > 1 else "Queue (1):")
-    y = blit_left(surf, panel, f_small, y, header, (255, 230, 180))
-    y += 4
+    y = blit_left(surf, panel, f_small, y, header, (255, 235, 190))
+    y += 6
     if not orders:
-        y = blit_left(surf, panel, f_small, y, "  —", (200, 190, 160))
+        y = blit_left(surf, panel, f_small, y, "  —", (210, 200, 175))
     else:
         for i, order in enumerate(orders):
             prefix = "▸ " if i == 0 else "  "
@@ -257,7 +264,7 @@ def draw_shift_hud(
                 f_small,
                 y,
                 f"{prefix}{order.ticket_label()}{side_tag}",
-                (255, 220, 170),
+                (255, 225, 175),
             )
             y += 2
     if mhu_progress is not None and mhu_progress > 0:
@@ -274,5 +281,50 @@ def draw_shift_hud(
     if status_lines:
         y += 6
         for line in status_lines:
-            y = blit_left(surf, panel, f_small, y, line, (170, 180, 200))
+            y = blit_left(surf, panel, f_small, y, line, (185, 195, 215))
             y += 2
+
+
+def draw_menu_name_chip(
+    surf: pygame.Surface,
+    rect: pygame.Rect,
+    font: pygame.font.Font,
+    *,
+    name: str,
+    active: bool = False,
+    muted: bool = False,
+) -> None:
+    fill = (22, 26, 36) if not muted else (18, 20, 28)
+    if active:
+        fill = (36, 42, 58)
+    pygame.draw.rect(surf, fill, rect, border_radius=6)
+    if active:
+        pygame.draw.rect(surf, (255, 228, 120), rect, 1, border_radius=6)
+    text = name if name else " "
+    cursor = "|" if active and (pygame.time.get_ticks() // 500) % 2 == 0 else ""
+    color = (245, 248, 255) if not muted else (160, 168, 185)
+    shown = font.render(text + cursor, True, color)
+    surf.blit(shown, (rect.centerx - shown.get_width() // 2, rect.centery - shown.get_height() // 2))
+
+
+def draw_menu_highscores(
+    surf: pygame.Surface,
+    rect: pygame.Rect,
+    font: pygame.font.Font,
+) -> None:
+    from highscores import top_scores
+
+    pygame.draw.rect(surf, (16, 18, 24), rect, border_radius=8)
+    pygame.draw.rect(surf, (48, 54, 68), rect, 1, border_radius=8)
+    y = rect.y + 10
+    title = font.render("Best", True, (190, 198, 215))
+    surf.blit(title, (rect.x + 12, y))
+    y += title.get_height() + 8
+    scores = top_scores(5)
+    if not scores:
+        return
+    for i, entry in enumerate(scores):
+        row = f"{i + 1}. {entry.name}  {entry.wafers}"
+        color = (230, 210, 150) if i == 0 else (175, 182, 198)
+        surf.blit(font.render(row, True, color), (rect.x + 12, y))
+        y += font.get_height() + 3

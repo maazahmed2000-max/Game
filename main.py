@@ -1,6 +1,6 @@
 """
 PSI Quantum–inspired wafer lab (single player, Overcooked-style flow).
-WASD + Space, or stick + Use. Finish wafers before the shift timer ends.
+WASD + Space, or on-screen buttons + Use. Finish wafers before the shift timer ends.
 """
 
 from __future__ import annotations
@@ -43,10 +43,12 @@ from lab import (
     default_map,
     find_walkable_spawn,
     bench_order_on_side,
+    chuck_in_test,
     gameplay_focus_order,
-    nearest_prober_side,
     nearest_rack_side,
     refresh_map_from_layout,
+    chuck_occupied,
+    resolve_load_side_for_player,
     player_near_step,
     player_near_zone_id,
     random_spawn_booth,
@@ -57,10 +59,13 @@ from lab import (
 )
 from player import Player
 from touch_controls import SoloTouch
+from highscores import best_for_name, normalize_name, submit_score
 from ui import (
     blit_centered,
     draw_editor_toggle,
     draw_left_hud_panel,
+    draw_menu_name_chip,
+    draw_menu_highscores,
     draw_shift_hud,
     draw_standby_penalty_notices,
     editor_toggle_rect,
@@ -70,7 +75,11 @@ from ui import (
 def font(size: int) -> pygame.font.Font:
     if sys.platform == "emscripten":
         return pygame.font.Font(None, size)
-    return pygame.font.SysFont("segoeui", size)
+    for name in ("segoeui", "segoe ui", "arial"):
+        path = pygame.font.match_font(name, bold=True)
+        if path:
+            return pygame.font.Font(path, size)
+    return pygame.font.SysFont("segoeui", size, bold=True)
 
 
 def _pulse_space(keys, last: bool, tap: bool) -> tuple[bool, bool]:
@@ -79,17 +88,23 @@ def _pulse_space(keys, last: bool, tap: bool) -> tuple[bool, bool]:
     return down, p
 
 
-def _menu_layout(sw: int, sh: int) -> tuple[pygame.Rect, pygame.Rect, list[pygame.Rect]]:
+def _menu_layout(sw: int, sh: int) -> tuple[pygame.Rect, pygame.Rect, list[pygame.Rect], pygame.Rect]:
     from game_assets import OPERATOR_COUNT
 
-    btn_play = pygame.Rect(sw // 2 - 140, sh - 132, 280, 52)
-    btn_quit = pygame.Rect(sw // 2 - 140, sh - 68, 280, 48)
-    card_w, card_h = 200, 200
-    gap = 48
+    card_w, card_h = 168, 188
+    gap = 36
     total_w = OPERATOR_COUNT * card_w + (OPERATOR_COUNT - 1) * gap
     start_x = sw // 2 - total_w // 2
-    cards = [pygame.Rect(start_x + i * (card_w + gap), min(248, sh // 2 - 120), card_w, card_h) for i in range(OPERATOR_COUNT)]
-    return btn_play, btn_quit, cards
+    card_y = max(150, sh // 2 - 118)
+    cards = [
+        pygame.Rect(start_x + i * (card_w + gap), card_y, card_w, card_h)
+        for i in range(OPERATOR_COUNT)
+    ]
+    btn_w, btn_h = 220, 46
+    btn_play = pygame.Rect(sw // 2 - btn_w // 2, card_y + card_h + 52, btn_w, btn_h)
+    btn_quit = pygame.Rect(sw // 2 - btn_w // 2, btn_play.bottom + 10, btn_w, 38)
+    scores_rect = pygame.Rect(sw - 210, 72, 188, 200)
+    return btn_play, btn_quit, cards, scores_rect
 
 
 async def run_menu(
@@ -100,86 +115,112 @@ async def run_menu(
     sticks: SoloTouch,
     f: pygame.font.Font,
     fs: pygame.font.Font,
-) -> tuple[str, int, pygame.Surface]:
+) -> tuple[str, int, pygame.Surface, str]:
     from game_assets import OPERATOR_COUNT, OPERATOR_NAMES
 
     selected_op = 0
+    player_name = OPERATOR_NAMES[0] if OPERATOR_NAMES else "Operator"
+    name_active = False
     mx = my = 0
     while True:
         clock.tick(60)
         await asyncio.sleep(0)
         sw, sh = screen.get_size()
-        btn_play, btn_quit, op_cards = _menu_layout(sw, sh)
+        btn_play, btn_quit, op_cards, scores_rect = _menu_layout(sw, sh)
+        name_rect = pygame.Rect(
+            op_cards[selected_op].x + 8,
+            op_cards[selected_op].bottom - 34,
+            op_cards[selected_op].width - 16,
+            28,
+        )
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return "quit", selected_op, screen
+                return "quit", selected_op, screen, player_name
             if event.type == pygame.MOUSEMOTION:
                 mx, my = event.pos
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if name_rect.collidepoint(event.pos):
+                    name_active = True
+                else:
+                    name_active = False
                 for i, rect in enumerate(op_cards):
                     if rect.collidepoint(event.pos):
                         selected_op = i
+                        if i < len(OPERATOR_NAMES):
+                            player_name = OPERATOR_NAMES[i]
                 if btn_play.collidepoint(event.pos):
-                    return "play", selected_op, screen
+                    return "play", selected_op, screen, normalize_name(player_name)
                 if btn_quit.collidepoint(event.pos):
-                    return "quit", selected_op, screen
+                    return "quit", selected_op, screen, player_name
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    return "quit", selected_op, screen
-                if event.key == pygame.K_RETURN:
-                    return "play", selected_op, screen
-                if event.key in (pygame.K_LEFT, pygame.K_a):
+                    if name_active:
+                        name_active = False
+                    else:
+                        return "quit", selected_op, screen, player_name
+                elif event.key == pygame.K_RETURN:
+                    return "play", selected_op, screen, normalize_name(player_name)
+                elif event.key in (pygame.K_LEFT, pygame.K_a) and not name_active:
                     selected_op = (selected_op - 1) % OPERATOR_COUNT
-                if event.key in (pygame.K_RIGHT, pygame.K_d):
+                    if selected_op < len(OPERATOR_NAMES):
+                        player_name = OPERATOR_NAMES[selected_op]
+                elif event.key in (pygame.K_RIGHT, pygame.K_d) and not name_active:
                     selected_op = (selected_op + 1) % OPERATOR_COUNT
-                if event.key == pygame.K_1:
+                    if selected_op < len(OPERATOR_NAMES):
+                        player_name = OPERATOR_NAMES[selected_op]
+                elif event.key == pygame.K_1 and not name_active:
                     selected_op = 0
-                if event.key == pygame.K_2 and OPERATOR_COUNT > 1:
+                    if OPERATOR_NAMES:
+                        player_name = OPERATOR_NAMES[0]
+                elif event.key == pygame.K_2 and OPERATOR_COUNT > 1 and not name_active:
                     selected_op = 1
+                    if len(OPERATOR_NAMES) > 1:
+                        player_name = OPERATOR_NAMES[1]
+                elif name_active:
+                    if event.key == pygame.K_BACKSPACE:
+                        player_name = player_name[:-1]
+                    elif event.key == pygame.K_TAB:
+                        name_active = False
+                    elif event.unicode and event.unicode.isprintable() and len(player_name) < 24:
+                        player_name += event.unicode
 
         screen.fill(BG)
-        t = f.render("PSI Quantum — wafer test shift", True, (238, 242, 252))
-        screen.blit(t, (sw // 2 - t.get_width() // 2, 56))
-        lines = [
-            "Receive at STORAGE, load the prober chuck, run MHU inventory at center, set test on side racks,",
-            "probe on the station head, then rack finished lots.",
-        ]
-        y = 108
-        for line in lines:
-            s = fs.render(line, True, (170, 180, 200))
-            screen.blit(s, (sw // 2 - s.get_width() // 2, y))
-            y += 24
-
-        pick = fs.render("Choose your operator", True, (200, 210, 230))
-        screen.blit(pick, (sw // 2 - pick.get_width() // 2, op_cards[0].top - 34))
+        title = f.render("PSI Quantum", True, (240, 244, 252))
+        screen.blit(title, (sw // 2 - title.get_width() // 2, 52))
+        sub = fs.render("Wafer test shift", True, (130, 138, 158))
+        screen.blit(sub, (sw // 2 - sub.get_width() // 2, 52 + title.get_height() + 6))
 
         for i, rect in enumerate(op_cards):
             active = i == selected_op
             hov = rect.collidepoint(mx, my)
-            fill = (72, 92, 130) if active else ((62, 74, 102) if hov else (44, 52, 72))
+            fill = (58, 72, 108) if active else ((50, 58, 78) if hov else (34, 38, 50))
             pygame.draw.rect(screen, fill, rect, border_radius=12)
-            border = (255, 230, 140) if active else (200, 210, 235)
-            pygame.draw.rect(screen, border, rect, 3 if active else 2, border_radius=12)
-            preview = assets.operator_menu_portrait(i, sprite_h=150)
+            border = (255, 228, 120) if active else (90, 98, 118)
+            pygame.draw.rect(screen, border, rect, 2 if active else 1, border_radius=12)
+            preview = assets.operator_menu_portrait(i, sprite_h=128)
             px = rect.centerx - preview.get_width() // 2
-            py = rect.centery - preview.get_height() // 2
+            py = rect.centery - preview.get_height() // 2 - 8
             screen.blit(preview, (px, py))
-            name = OPERATOR_NAMES[i] if i < len(OPERATOR_NAMES) else f"Operator {i + 1}"
-            label = f.render(name, True, (245, 247, 255) if active else (210, 215, 230))
-            screen.blit(label, (rect.centerx - label.get_width() // 2, rect.bottom + 10))
+            if active:
+                draw_menu_name_chip(screen, name_rect, fs, name=player_name, active=name_active)
+            else:
+                op_name = OPERATOR_NAMES[i] if i < len(OPERATOR_NAMES) else f"Op {i + 1}"
+                chip = pygame.Rect(rect.x + 8, rect.bottom - 34, rect.width - 16, 28)
+                draw_menu_name_chip(screen, chip, fs, name=op_name, active=False, muted=True)
 
-        hint = fs.render("Click a card or use ←/→ · keys 1–2 (Martin / Katelyn)", True, (140, 148, 168))
-        screen.blit(hint, (sw // 2 - hint.get_width() // 2, op_cards[0].bottom + 38))
+        draw_menu_highscores(screen, scores_rect, fs)
 
-        for rect, label, big in (
+        for rect, label, primary in (
             (btn_play, "Start shift", True),
             (btn_quit, "Quit", False),
         ):
             hov = rect.collidepoint(mx, my)
-            pygame.draw.rect(screen, (58, 72, 110) if hov else (44, 52, 72), rect, border_radius=10)
-            pygame.draw.rect(screen, (200, 210, 235), rect, 2, border_radius=10)
-            fn = f if big else fs
-            z = fn.render(label, True, (245, 247, 255))
+            if primary:
+                pygame.draw.rect(screen, (52, 68, 104) if hov else (42, 52, 78), rect, border_radius=10)
+                pygame.draw.rect(screen, (210, 218, 235), rect, 2, border_radius=10)
+                z = f.render(label, True, (245, 248, 255))
+            else:
+                z = fs.render(label, True, (150, 158, 175) if hov else (120, 128, 145))
             screen.blit(z, (rect.centerx - z.get_width() // 2, rect.centery - z.get_height() // 2))
 
         present_frame(display, screen)
@@ -194,6 +235,7 @@ async def run_shift(
     fonts: tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font],
     assets: GameAssets,
     operator: int = 0,
+    player_name: str = "Operator",
 ) -> tuple[pygame.Surface, object]:
     f_ui, f_small, f_btn = fonts
     f_world = font(14)
@@ -311,12 +353,14 @@ async def run_shift(
                 if o.chamber_started:
                     o.tick_chamber(dt)
                 elif o.next_expected() == Cell.TEST_CHAMBER and o.prober_side:
-                    if player_near_zone_id(player.col, player.row, f"chuck_{o.prober_side}"):
-                        o.start_chamber_run()
+                    if player_near_step(
+                        cells, player.col, player.row, o, Cell.TEST_CHAMBER, orders=orders
+                    ):
+                        o.start_chamber_run(orders)
 
             for o in orders:
                 if o.next_expected() == Cell.PROBER_WAIT and player_near_step(
-                    cells, player.col, player.row, o, Cell.PROBER_WAIT
+                    cells, player.col, player.row, o, Cell.PROBER_WAIT, orders=orders
                 ):
                     mhu_order = o
                     break
@@ -335,15 +379,18 @@ async def run_shift(
                     o = orders[carry_idx]
                     exp = o.next_expected()
                     if exp == Cell.PROBER_LOAD and player_near_step(
-                        cells, player.col, player.row, o, Cell.PROBER_LOAD
+                        cells, player.col, player.row, o, Cell.PROBER_LOAD, orders=orders
                     ):
-                        if o.apply_station(Cell.PROBER_LOAD):
-                            o.prober_side = nearest_prober_side(player.col, player.row, "load")
+                        load_side = resolve_load_side_for_player(
+                            player.col, player.row, orders, o
+                        )
+                        if load_side is not None and o.apply_station(Cell.PROBER_LOAD):
+                            o.prober_side = load_side
                             player.carrying_wafer = False
                             player.carrying_order_idx = None
                             interact_cd = 0.22
                     elif exp == Cell.FINISHED_RACK and player_near_step(
-                        cells, player.col, player.row, o, Cell.FINISHED_RACK
+                        cells, player.col, player.row, o, Cell.FINISHED_RACK, orders=orders
                     ):
                         if o.apply_station(Cell.FINISHED_RACK):
                             player.carrying_wafer = False
@@ -358,6 +405,8 @@ async def run_shift(
                         if bo is None:
                             continue
                         if bo.prober_side is None:
+                            if chuck_occupied(orders, side):
+                                continue
                             bo.prober_side = side
                         if TEST_CYCLE[dial_by_side[side]] == bo.required:
                             if bo.apply_station(Cell.TEST_BENCH):
@@ -369,7 +418,7 @@ async def run_shift(
                     else:
                         for i, o in enumerate(orders):
                             if o.next_expected() == Cell.RECEIVING and player_near_step(
-                                cells, player.col, player.row, o, Cell.RECEIVING
+                                cells, player.col, player.row, o, Cell.RECEIVING, orders=orders
                             ):
                                 if o.apply_station(Cell.RECEIVING):
                                     player.carrying_wafer = True
@@ -412,11 +461,13 @@ async def run_shift(
         )
         if focus is not None:
             exp_now = focus.next_expected()
-            target = step_destination(cells, focus, carrying=player.carrying_wafer)
+            target = step_destination(cells, focus, carrying=player.carrying_wafer, orders=orders)
             if (
                 target is not None
                 and exp_now
-                and not player_near_step(cells, player.col, player.row, focus, exp_now)
+                and not player_near_step(
+                    cells, player.col, player.row, focus, exp_now, orders=orders
+                )
             ):
                 pulse_t = pygame.time.get_ticks() / 1000.0
                 objective_arrow = (player.col, player.row, target[0], target[1], pulse_t)
@@ -482,7 +533,15 @@ async def run_shift(
         )
         if focus is not None:
             exp = focus.next_expected()
-            if exp == Cell.FINISHED_RACK and not player.carrying_wafer:
+            if (
+                exp == Cell.PROBER_LOAD
+                and player.carrying_wafer
+                and resolve_load_side_for_player(player.col, player.row, orders, focus) is None
+                and chuck_occupied(orders, "l")
+                and chuck_occupied(orders, "r")
+            ):
+                status.append("Stations busy")
+            elif exp == Cell.FINISHED_RACK and not player.carrying_wafer:
                 status.append("Pick up at load pad (Space)")
             elif exp == Cell.FINISHED_RACK:
                 status.append("Rack at storage (Space)")
@@ -500,12 +559,12 @@ async def run_shift(
             chuck_tracker=chuck_standby,
             penalty_flash=bool(chuck_standby.notices),
         )
-        draw_standby_penalty_notices(screen, (f_ui, f_small), chuck_standby.notices)
+        draw_standby_penalty_notices(screen, (font(19), font(14)), chuck_standby.notices)
 
-        hint = "WASD · Space = use · A/D = rack dial · Esc = menu"
+        hint = "WASD / D-pad · Space / Use · A/D = rack dial · Esc = menu"
         if DEBUG_MAP_EDITOR:
             hint += " · Editor / M"
-        blit_centered(screen, f_small, sh - 44, hint, (130, 135, 155))
+        blit_centered(screen, f_small, sh - 44, hint, (150, 155, 175))
         present_frame(display, screen)
 
     finally:
@@ -515,7 +574,10 @@ async def run_shift(
                 map_editor.persist()
         flush_layout_to_disk()
 
-    t0 = 2.5
+    t0 = 3.5
+    name = normalize_name(player_name)
+    is_new_best, _prev_best = submit_score(name, wafers_done)
+    personal_best = best_for_name(name)
     while t0 > 0:
         dt = clock.tick(60) / 1000.0
         await asyncio.sleep(0)
@@ -524,10 +586,18 @@ async def run_shift(
             if event.type in (pygame.QUIT, pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                 t0 = 0
         screen.fill(BG)
-        msg = f"Shift over — wafers completed: {wafers_done}"
-        r = f_ui.render(msg, True, (240, 245, 255))
         sw, sh = screen.get_size()
-        screen.blit(r, (sw // 2 - r.get_width() // 2, sh // 2 - 40))
+        y = sh // 2 - 72
+        msg = f"Shift over — {name}: {wafers_done} wafers"
+        r = f_ui.render(msg, True, (240, 245, 255))
+        screen.blit(r, (sw // 2 - r.get_width() // 2, y))
+        y += r.get_height() + 12
+        if is_new_best and wafers_done > 0:
+            sub = f_small.render("New personal best!", True, (255, 225, 140))
+            screen.blit(sub, (sw // 2 - sub.get_width() // 2, y))
+        elif personal_best is not None:
+            sub = f_small.render(f"Personal best: {personal_best}", True, (170, 180, 200))
+            screen.blit(sub, (sw // 2 - sub.get_width() // 2, y))
         present_frame(display, screen)
 
     return screen, view
@@ -546,12 +616,14 @@ async def main() -> None:
     assets.set_screen_size(sw, sh)
     view = make_iso_view_for_background(assets, sw, sh)
     sticks = SoloTouch(sw, sh, display=display)
-    f_ui = font(22)
-    f_small = font(17)
-    f_btn = font(16)
+    f_ui = font(28)
+    f_small = font(21)
+    f_btn = font(19)
 
     while True:
-        choice, operator, screen = await run_menu(screen, clock, display, assets, sticks, f_ui, f_small)
+        choice, operator, screen, player_name = await run_menu(
+            screen, clock, display, assets, sticks, f_ui, f_small
+        )
         if choice == "quit":
             break
         screen, view = await run_shift(
@@ -563,6 +635,7 @@ async def main() -> None:
             (f_ui, f_small, f_btn),
             assets,
             operator,
+            player_name,
         )
 
     flush_layout_to_disk()
