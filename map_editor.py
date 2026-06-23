@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import List, Optional, Set, Tuple
+from typing import List, Literal, Optional, Set, Tuple, Union
 
 import pygame
 
@@ -24,9 +24,44 @@ from lab import (
     Cell,
     ProberSortOutcome,
     StationZone,
-    _structural_blocked,
     prober_sort_in_near_zone,
     prober_sort_outcome,
+)
+
+LayoutKind = Literal["prober", "cryo"]
+EditorLayout = Union[DevLayout, "CryoLayout"]
+
+PROBER_SELECTIONS: Tuple[str, ...] = (
+    "tiles",
+    "axes",
+    "walls",
+    "storage",
+    "receiving",
+    "labels",
+    "anchor",
+    "prober_front",
+    "spade",
+    "finished",
+    "zone:mhu",
+    "zone:rack_l",
+    "zone:rack_r",
+    "zone:chuck_l",
+    "zone:chuck_r",
+    "zone:load_l",
+    "zone:load_r",
+)
+
+CRYO_SELECTIONS: Tuple[str, ...] = (
+    "tiles",
+    "axes",
+    "walls",
+    "receiving",
+    "anchor",
+    "finished",
+    "bond_table",
+    "bench_front",
+    "cryostat",
+    "cryostat_front",
 )
 
 Point = Tuple[float, float]
@@ -64,47 +99,56 @@ _SORT_ARROW_LABEL: dict[ProberSortOutcome, str] = {
 
 
 class MapEditor:
-    def __init__(self) -> None:
+    def __init__(self, *, kind: LayoutKind = "prober") -> None:
+        self.kind = kind
         self.active = False
-        self.layout = get_layout()
+        self.layout = self._fetch_layout()
         self.selected = "tiles"
         self._drag_id: Optional[str] = None
         self._drag_anchor: Tuple[float, float] = (0.0, 0.0)
-        self._layout_start: Optional[DevLayout] = None
+        self._layout_start: Optional[EditorLayout] = None
         self._paint_last: Optional[LatticeCoord] = None
-        self._selections = [
-            "tiles",
-            "axes",
-            "walls",
-            "storage",
-            "receiving",
-            "labels",
-            "anchor",
-            "prober_front",
-            "spade",
-            "finished",
-            "zone:mhu",
-            "zone:rack_l",
-            "zone:rack_r",
-            "zone:chuck_l",
-            "zone:chuck_r",
-            "zone:load_l",
-            "zone:load_r",
-        ]
+        self._selections = list(PROBER_SELECTIONS if kind == "prober" else CRYO_SELECTIONS)
+
+    def _fetch_layout(self) -> EditorLayout:
+        if self.kind == "cryo":
+            from cryo_layout import get_cryo_layout
+
+            return get_cryo_layout()
+        return get_layout()
+
+    def _apply_runtime_layout(self) -> None:
+        if self.kind == "cryo":
+            from cryo_layout import apply_cryo_layout
+
+            apply_cryo_layout(self.layout)  # type: ignore[arg-type]
+        else:
+            self._apply_runtime_layout()  # type: ignore[arg-type]
+
+    def _structural_blocked(self, col: int, row: int) -> bool:
+        return not self.layout.is_inside_play_bounds(col, row)
+
+    def _layout_save_name(self) -> str:
+        return "cryo_layout.json" if self.kind == "cryo" else "dev_layout.json"
 
     def set_enabled(self, on: bool) -> None:
         self.active = on
         if on:
-            self.layout = get_layout()
+            self.layout = self._fetch_layout()
             self._paint_last = None
         else:
             self.end_drag(commit=True)
             self.persist()
 
     def persist(self) -> bool:
-        """Write current editor layout to dev_layout.json."""
-        apply_layout(self.layout)
-        return commit_layout(self.layout)
+        """Write current editor layout to dev_layout.json or cryo_layout.json."""
+        if self.kind == "cryo":
+            from cryo_layout import apply_cryo_layout, commit_cryo_layout
+
+            apply_cryo_layout(self.layout)  # type: ignore[arg-type]
+            return commit_cryo_layout(self.layout)  # type: ignore[arg-type]
+        apply_layout(self.layout)  # type: ignore[arg-type]
+        return commit_layout(self.layout)  # type: ignore[arg-type]
 
     def end_drag(self, *, commit: bool = True) -> None:
         if self._drag_id and commit:
@@ -153,14 +197,30 @@ class MapEditor:
             ("label_chuck_r", *layout.label_chuck_r()),
         ]
 
-    def _handles_visible(self, layout: DevLayout) -> List[Handle]:
+    def _cryo_station_handles(self, layout: "CryoLayout") -> List[Handle]:
+        h: List[Handle] = []
+        if self.selected == "bond_table":
+            h.append(("bond_pos", layout.bond_c, layout.bond_r))
+            h.append(
+                ("bond_rad", layout.bond_c + layout.bond_radius * 0.7, layout.bond_r)
+            )
+        if self.selected == "cryostat":
+            h.append(("cryo_pos", layout.cryostat_c, layout.cryostat_r))
+            h.append(
+                ("cryo_rad", layout.cryostat_c + layout.cryostat_radius * 0.7, layout.cryostat_r)
+            )
+        return h
+
+    def _handles_visible(self, layout: EditorLayout) -> List[Handle]:
         """Selection handles; label handles are always shown while editing."""
         primary = self._handles(layout)
-        if self.selected == "labels":
+        if self.kind == "prober" and self.selected == "labels":
             return primary
-        return primary + self._label_handles(layout)
+        if self.kind == "prober":
+            return primary + self._label_handles(layout)  # type: ignore[arg-type]
+        return primary
 
-    def _handles(self, layout: DevLayout) -> List[Handle]:
+    def _handles(self, layout: EditorLayout) -> List[Handle]:
         if self.selected == "tiles":
             return []
 
@@ -174,8 +234,8 @@ class MapEditor:
                 ("axis_y", ytip[0], ytip[1]),
             ]
 
-        if self.selected == "labels":
-            return self._label_handles(layout)
+        if self.selected == "labels" and self.kind == "prober":
+            return self._label_handles(layout)  # type: ignore[arg-type]
 
         h: List[Handle] = []
         for i, (c, r) in enumerate(layout.play_bounds_corners):
@@ -191,29 +251,53 @@ class MapEditor:
                 h.append(("receiving_all", cx, cr))
 
         if self.selected == "anchor":
-            h.append(("prober_c", layout.prober_cx, layout.prober_cy))
+            if self.kind == "cryo":
+                h.append(("anchor", layout.view_anchor_c, layout.view_anchor_r))
+            else:
+                h.append(("prober_c", layout.prober_cx, layout.prober_cy))  # type: ignore[attr-defined]
 
-        if self.selected == "prober_front":
-            ox, oy = layout.prober_front_origin()
-            h.append(("prober_front_o", ox, oy))
-            tip = layout.prober_front_tip()
-            h.append(("prober_front", tip[0], tip[1]))
-            pc, pr = layout.prober_cx, layout.prober_cy
-            nr = layout.prober_sort_near_radius
-            h.append(("prober_sort_r", pc + nr, pr))
+        if self.kind == "prober":
+            lay = layout  # type: ignore[assignment]
+            if self.selected == "prober_front":
+                ox, oy = lay.prober_front_origin()
+                h.append(("prober_front_o", ox, oy))
+                tip = lay.prober_front_tip()
+                h.append(("prober_front", tip[0], tip[1]))
+                pc, pr = lay.prober_cx, lay.prober_cy
+                nr = lay.prober_sort_near_radius
+                h.append(("prober_sort_r", pc + nr, pr))
 
-        if self.selected == "spade":
-            play_tl = layout.play_bounds_corners[0]
-            h.append(("spade_tl", layout.spade_c0 + 0.5, play_tl[1]))
-            h.append(("spade_br", COLS - 1.5, layout.spade_r1 + 0.5))
-        h.append(("finished", layout.finished_c, layout.finished_r))
+            if self.selected == "spade":
+                play_tl = layout.play_bounds_corners[0]
+                h.append(("spade_tl", lay.spade_c0 + 0.5, play_tl[1]))
+                h.append(("spade_br", COLS - 1.5, lay.spade_r1 + 0.5))
 
-        for zid, zd in layout.zones.items():
-            if self.selected == f"zone:{zid}":
-                h.append((f"zone_pos:{zid}", layout.prober_cx + zd.dx, layout.prober_cy + zd.dy))
-                h.append(
-                    (f"zone_rad:{zid}", layout.prober_cx + zd.dx + zd.radius * 0.7, layout.prober_cy + zd.dy)
-                )
+            for zid, zd in lay.zones.items():
+                if self.selected == f"zone:{zid}":
+                    h.append((f"zone_pos:{zid}", lay.prober_cx + zd.dx, lay.prober_cy + zd.dy))
+                    h.append(
+                        (f"zone_rad:{zid}", lay.prober_cx + zd.dx + zd.radius * 0.7, lay.prober_cy + zd.dy)
+                    )
+        elif self.kind == "cryo":
+            h.extend(self._cryo_station_handles(layout))  # type: ignore[arg-type]
+            cl = layout  # type: ignore[assignment]
+            if self.selected == "bench_front":
+                ox, oy = cl.bond_front_origin()
+                h.append(("bond_front_o", ox, oy))
+                tip = cl.bond_front_tip()
+                h.append(("bond_front", tip[0], tip[1]))
+                nr = cl.bond_sort_near_radius
+                h.append(("bond_sort_r", cl.bond_c + nr, cl.bond_r))
+            if self.selected == "cryostat_front":
+                ox, oy = cl.cryostat_front_origin()
+                h.append(("cryo_front_o", ox, oy))
+                tip = cl.cryostat_front_tip()
+                h.append(("cryo_front", tip[0], tip[1]))
+                nr = cl.cryostat_sort_near_radius
+                h.append(("cryo_sort_r", cl.cryostat_c + nr, cl.cryostat_r))
+
+        if self.selected == "finished":
+            h.append(("finished", layout.finished_c, layout.finished_r))
         return h
 
     def _label_screen_xy(
@@ -225,7 +309,9 @@ class MapEditor:
 
     def _pick_label_handle(self, view: IsoView, mx: int, my: int) -> Optional[str]:
         """Screen-space pick on visible label anchors (easier than grid handles)."""
-        lay = self.layout
+        if self.kind != "prober":
+            return None
+        lay = self.layout  # type: ignore[assignment]
         candidates: Tuple[Tuple[str, float, float, float], ...] = (
             ("label_storage", *lay.label_storage(), 3.2),
             ("label_rack_l", *lay.label_rack_l(), 4.5),
@@ -274,7 +360,7 @@ class MapEditor:
     def continue_drag(self, view: IsoView, pos: Tuple[int, int]) -> None:
         if self._drag_id and self._layout_start:
             self._apply_drag(view, pos)
-            apply_layout(self.layout)
+            self._apply_runtime_layout()
 
     def _handle_pointer(self, event: pygame.event.Event, view: IsoView) -> bool:
         pos = self._mouse_xy(event)
@@ -295,7 +381,7 @@ class MapEditor:
 
         if event.type == pygame.MOUSEMOTION and self._drag_id and self._layout_start:
             self._apply_drag(view, pos)
-            apply_layout(self.layout)
+            self._apply_runtime_layout()
             return True
 
         return False
@@ -309,7 +395,15 @@ class MapEditor:
             return True
         if hid.startswith("label_"):
             return True
-        if self.selected == "anchor" and hid == "prober_c":
+        if self.selected == "anchor" and hid in ("prober_c", "anchor"):
+            return True
+        if self.selected == "bond_table" and hid in ("bond_pos", "bond_rad"):
+            return True
+        if self.selected == "cryostat" and hid in ("cryo_pos", "cryo_rad"):
+            return True
+        if self.selected == "bench_front" and hid in ("bond_front_o", "bond_front", "bond_sort_r"):
+            return True
+        if self.selected == "cryostat_front" and hid in ("cryo_front_o", "cryo_front", "cryo_sort_r"):
             return True
         if self.selected == "prober_front" and hid in ("prober_front_o", "prober_front", "prober_sort_r"):
             return True
@@ -342,11 +436,19 @@ class MapEditor:
                 self.persist()
                 return True
             if event.key in (pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET):
-                if self.selected.startswith("zone:"):
+                delta = -0.05 if event.key == pygame.K_LEFTBRACKET else 0.05
+                if self.kind == "cryo" and self.selected == "bond_table":
+                    lay = self.layout  # type: ignore[assignment]
+                    lay.bond_radius = max(0.4, lay.bond_radius + delta)
+                    self.persist()
+                elif self.kind == "cryo" and self.selected == "cryostat":
+                    lay = self.layout  # type: ignore[assignment]
+                    lay.cryostat_radius = max(0.4, lay.cryostat_radius + delta)
+                    self.persist()
+                elif self.kind == "prober" and self.selected.startswith("zone:"):
                     zid = self.selected[5:]
                     if zid in self.layout.zones:
                         z = self.layout.zones[zid]
-                        delta = -0.05 if event.key == pygame.K_LEFTBRACKET else 0.05
                         self.layout.zones[zid] = type(z)(z.dx, z.dy, max(0.4, z.radius + delta), z.step)
                         self.persist()
                 return True
@@ -366,14 +468,14 @@ class MapEditor:
                 self._paint_last = None
                 block = event.button == 1
                 if self._paint_at(view, pos, block=block):
-                    apply_layout(self.layout)
+                    self._apply_runtime_layout()
                     return True
             if event.type == pygame.MOUSEMOTION:
                 buttons = pygame.mouse.get_pressed()
                 if buttons[0] or buttons[2]:
                     block = bool(buttons[0])
                     if self._paint_at(view, pos, block=block):
-                        apply_layout(self.layout)
+                        self._apply_runtime_layout()
                         return True
             if event.type == pygame.MOUSEBUTTONUP:
                 self._paint_last = None
@@ -398,7 +500,7 @@ class MapEditor:
             sc, sr = start.play_bounds_corners[idx]
             corners[idx] = (sc + dc, sr + dr)
             lay.play_bounds_corners = corners
-        elif hid.startswith("storage_c:"):
+        elif hid.startswith("storage_c:") and self.kind == "prober":
             idx = int(hid.split(":")[1])
             corners = list(lay.storage_corners)
             sc, sr = start.storage_corners[idx]
@@ -459,21 +561,69 @@ class MapEditor:
                         deduped.append(t)
                 lay.receiving_booths = deduped
 
-        elif hid == "prober_c":
-            apply_prober_anchor_drag(lay, start, dc, dr)
+        elif hid == "prober_c" and self.kind == "prober":
+            apply_prober_anchor_drag(lay, start, dc, dr)  # type: ignore[arg-type]
 
-        elif hid == "prober_front_o":
+        elif hid == "anchor" and self.kind == "cryo":
+            from cryo_layout import apply_cryo_anchor_drag
+
+            apply_cryo_anchor_drag(lay, start, dc, dr)  # type: ignore[arg-type]
+
+        elif hid == "bond_pos" and self.kind == "cryo":
+            lay.bond_c = start.bond_c + dc  # type: ignore[attr-defined]
+            lay.bond_r = start.bond_r + dr  # type: ignore[attr-defined]
+            lay.bond_front_origin_c = start.bond_front_origin_c + dc  # type: ignore[attr-defined]
+            lay.bond_front_origin_r = start.bond_front_origin_r + dr  # type: ignore[attr-defined]
+        elif hid == "bond_rad" and self.kind == "cryo":
+            dist = math.hypot(gc - start.bond_c, gr - start.bond_r)  # type: ignore[attr-defined]
+            lay.bond_radius = max(0.4, min(3.5, dist))  # type: ignore[attr-defined]
+        elif hid == "cryo_pos" and self.kind == "cryo":
+            lay.cryostat_c = start.cryostat_c + dc  # type: ignore[attr-defined]
+            lay.cryostat_r = start.cryostat_r + dr  # type: ignore[attr-defined]
+            lay.cryostat_front_origin_c = start.cryostat_front_origin_c + dc  # type: ignore[attr-defined]
+            lay.cryostat_front_origin_r = start.cryostat_front_origin_r + dr  # type: ignore[attr-defined]
+        elif hid == "cryo_rad" and self.kind == "cryo":
+            dist = math.hypot(gc - start.cryostat_c, gr - start.cryostat_r)  # type: ignore[attr-defined]
+            lay.cryostat_radius = max(0.4, min(3.5, dist))  # type: ignore[attr-defined]
+
+        elif hid == "bond_front_o" and self.kind == "cryo":
+            lay.bond_front_origin_c = start.bond_front_origin_c + dc  # type: ignore[attr-defined]
+            lay.bond_front_origin_r = start.bond_front_origin_r + dr  # type: ignore[attr-defined]
+        elif hid == "bond_front" and self.kind == "cryo":
+            ox, oy = lay.bond_front_origin_c, lay.bond_front_origin_r  # type: ignore[attr-defined]
+            vx, vy = gc - ox, gr - oy
+            if math.hypot(vx, vy) >= 0.35:
+                lay.bond_front_dx = vx  # type: ignore[attr-defined]
+                lay.bond_front_dy = vy  # type: ignore[attr-defined]
+        elif hid == "bond_sort_r" and self.kind == "cryo":
+            dist = math.hypot(gc - lay.bond_c, gr - lay.bond_r)  # type: ignore[attr-defined]
+            lay.bond_sort_near_radius = max(2.5, min(14.0, dist))  # type: ignore[attr-defined]
+
+        elif hid == "cryo_front_o" and self.kind == "cryo":
+            lay.cryostat_front_origin_c = start.cryostat_front_origin_c + dc  # type: ignore[attr-defined]
+            lay.cryostat_front_origin_r = start.cryostat_front_origin_r + dr  # type: ignore[attr-defined]
+        elif hid == "cryo_front" and self.kind == "cryo":
+            ox, oy = lay.cryostat_front_origin_c, lay.cryostat_front_origin_r  # type: ignore[attr-defined]
+            vx, vy = gc - ox, gr - oy
+            if math.hypot(vx, vy) >= 0.35:
+                lay.cryostat_front_dx = vx  # type: ignore[attr-defined]
+                lay.cryostat_front_dy = vy  # type: ignore[attr-defined]
+        elif hid == "cryo_sort_r" and self.kind == "cryo":
+            dist = math.hypot(gc - lay.cryostat_c, gr - lay.cryostat_r)  # type: ignore[attr-defined]
+            lay.cryostat_sort_near_radius = max(2.5, min(14.0, dist))  # type: ignore[attr-defined]
+
+        elif hid == "prober_front_o" and self.kind == "prober":
             lay.prober_front_origin_c = start.prober_front_origin_c + dc
             lay.prober_front_origin_r = start.prober_front_origin_r + dr
 
-        elif hid == "prober_front":
+        elif hid == "prober_front" and self.kind == "prober":
             ox, oy = lay.prober_front_origin_c, lay.prober_front_origin_r
             vx, vy = gc - ox, gr - oy
             if math.hypot(vx, vy) >= 0.35:
                 lay.prober_front_dx = vx
                 lay.prober_front_dy = vy
 
-        elif hid == "prober_sort_r":
+        elif hid == "prober_sort_r" and self.kind == "prober":
             dist = math.hypot(gc - lay.prober_cx, gr - lay.prober_cy)
             lay.prober_sort_near_radius = max(2.5, min(14.0, dist))
 
@@ -491,16 +641,16 @@ class MapEditor:
             if math.hypot(vx, vy) >= 0.2:
                 lay.tile_axis_y = (vx, vy)
 
-        elif hid == "spade_tl":
+        elif hid == "spade_tl" and self.kind == "prober":
             lay.spade_c0 = max(0, min(COLS - 1, start.spade_c0 + int(round(dc))))
-        elif hid == "spade_br":
+        elif hid == "spade_br" and self.kind == "prober":
             lay.spade_r1 = max(0, min(ROWS - 1, start.spade_r1 + int(round(dr))))
 
         elif hid == "finished":
             lay.finished_c = max(0, min(COLS - 1, start.finished_c + int(round(dc))))
             lay.finished_r = max(0, min(ROWS - 1, start.finished_r + int(round(dr))))
 
-        elif hid.startswith("zone_pos:"):
+        elif hid.startswith("zone_pos:") and self.kind == "prober":
             zid = hid.split(":", 1)[1]
             z = start.zones[zid]
             # Offset from prober at drag start so the handle stays under the cursor.
@@ -510,7 +660,7 @@ class MapEditor:
                 z.radius,
                 z.step,
             )
-        elif hid.startswith("zone_rad:"):
+        elif hid.startswith("zone_rad:") and self.kind == "prober":
             zid = hid.split(":", 1)[1]
             z = start.zones[zid]
             lay.zones[zid] = type(z)(z.dx, z.dy, max(0.4, z.radius + math.hypot(dc, dr) * 0.12), z.step)
@@ -560,6 +710,147 @@ class MapEditor:
         if len(pts) >= 3:
             pygame.draw.polygon(layer, fill, pts)
 
+    def _draw_equipment_sort_zones(
+        self,
+        surf: pygame.Surface,
+        view: IsoView,
+        *,
+        center_c: float,
+        center_r: float,
+        near: float,
+        sort_outcome,
+        in_near_zone,
+    ) -> None:
+        layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        ir = int(math.ceil(near)) + 1
+        for di in range(-ir, ir + 1):
+            for dj in range(-ir, ir + 1):
+                if di * di + dj * dj > near * near:
+                    continue
+                c, r = center_c + di, center_r + dj
+                ic, irow = int(round(c)), int(round(r))
+                if not (0 <= ic < COLS and 0 <= irow < ROWS) or self._structural_blocked(ic, irow):
+                    continue
+                outcome = sort_outcome(c, r)
+                fill = _SORT_ZONE_FILL.get(outcome)
+                if fill:
+                    if not in_near_zone(c, r):
+                        fill = (fill[0], fill[1], fill[2], max(20, fill[3] // 2))
+                    self._draw_sort_zone_cell(layer, view, c, r, fill)
+        surf.blit(layer, (0, 0))
+
+    def _draw_equipment_near_ring(
+        self,
+        surf: pygame.Surface,
+        view: IsoView,
+        *,
+        center_c: float,
+        center_r: float,
+        near: float,
+    ) -> None:
+        ring: List[Tuple[int, int]] = []
+        for i in range(56):
+            ang = (2.0 * math.pi * i) / 56.0
+            c = center_c + math.cos(ang) * near
+            r = center_r + math.sin(ang) * near
+            sx, sy = view.center(c, r)
+            ring.append((int(sx), int(sy)))
+        if len(ring) >= 3:
+            pygame.draw.lines(surf, (255, 220, 100), True, ring, 2)
+
+    def _draw_equipment_approach_arrows(
+        self,
+        surf: pygame.Surface,
+        view: IsoView,
+        font: pygame.font.Font,
+        *,
+        center_c: float,
+        center_r: float,
+        near: float,
+        sort_outcome,
+    ) -> None:
+        for ux, uy, label in _APPROACH_DIRS:
+            sample_c = center_c + ux * near * 0.88
+            sample_r = center_r + uy * near * 0.88
+            outcome = sort_outcome(sample_c, sample_r)
+            start_c = center_c + ux * (near + 2.4)
+            start_r = center_r + uy * (near + 2.4)
+            self._draw_approach_arrow(
+                surf,
+                view,
+                font,
+                view.center(start_c, start_r),
+                view.center(sample_c, sample_r),
+                outcome,
+                label,
+            )
+
+    def _draw_cryo_equipment_front(
+        self,
+        surf: pygame.Surface,
+        view: IsoView,
+        font: pygame.font.Font,
+        lay: "CryoLayout",
+        *,
+        equip: str,
+    ) -> None:
+        from cryo_layout import (
+            bond_sort_in_near_zone,
+            bond_sort_outcome,
+            cryostat_sort_in_near_zone,
+            cryostat_sort_outcome,
+        )
+
+        if equip == "bond":
+            cc, cr = lay.bond_c, lay.bond_r
+            near = lay.bond_sort_near_radius
+            sort_fn = bond_sort_outcome
+            near_fn = bond_sort_in_near_zone
+            origin = lay.bond_front_origin()
+            tip = lay.bond_front_tip()
+            label = "BENCH FRONT"
+            fx, fy = lay.bond_front_dir()
+        else:
+            cc, cr = lay.cryostat_c, lay.cryostat_r
+            near = lay.cryostat_sort_near_radius
+            sort_fn = cryostat_sort_outcome
+            near_fn = cryostat_sort_in_near_zone
+            origin = lay.cryostat_front_origin()
+            tip = lay.cryostat_front_tip()
+            label = "CRYO FRONT"
+            fx, fy = lay.cryostat_front_dir()
+
+        self._draw_equipment_sort_zones(
+            surf,
+            view,
+            center_c=cc,
+            center_r=cr,
+            near=near,
+            sort_outcome=sort_fn,
+            in_near_zone=near_fn,
+        )
+        self._draw_equipment_near_ring(surf, view, center_c=cc, center_r=cr, near=near)
+        self._draw_equipment_approach_arrows(
+            surf,
+            view,
+            font,
+            center_c=cc,
+            center_r=cr,
+            near=near,
+            sort_outcome=sort_fn,
+        )
+        self._draw_arrow(surf, view, font, origin, tip, (90, 255, 150), label)
+        ax, ay = view.center(cc, cr)
+        pygame.draw.circle(surf, (160, 170, 200), (int(ax), int(ay)), 6, 2)
+        ox, oy = view.center(origin[0], origin[1])
+        pygame.draw.circle(surf, (255, 255, 180), (int(ox), int(oy)), 8)
+        pygame.draw.circle(surf, (40, 40, 50), (int(ox), int(oy)), 8, 2)
+        perp = (-fy, fx)
+        span = view.hw * 5.0
+        p0 = (int(ox - perp[0] * span), int(oy - perp[1] * span * 0.5))
+        p1 = (int(ox + perp[0] * span), int(oy + perp[1] * span * 0.5))
+        pygame.draw.line(surf, (90, 255, 150), p0, p1, 1)
+
     def _draw_prober_sort_zones(
         self, surf: pygame.Surface, view: IsoView, lay: DevLayout
     ) -> None:
@@ -573,7 +864,7 @@ class MapEditor:
                     continue
                 c, r = pc + di, pr + dj
                 ic, irow = int(round(c)), int(round(r))
-                if not (0 <= ic < COLS and 0 <= irow < ROWS) or _structural_blocked(ic, irow):
+                if not (0 <= ic < COLS and 0 <= irow < ROWS) or self._structural_blocked(ic, irow):
                     continue
                 outcome = prober_sort_outcome(c, r)
                 fill = _SORT_ZONE_FILL.get(outcome)
@@ -675,7 +966,7 @@ class MapEditor:
     def _toggle_receiving_booth(self, tile: Tile, *, add: bool) -> bool:
         booths = self.layout.receiving_booths
         if add:
-            if tile in booths or _structural_blocked(tile[0], tile[1]):
+            if tile in booths or self._structural_blocked(tile[0], tile[1]):
                 return False
             booths.append(tile)
             return True
@@ -693,7 +984,7 @@ class MapEditor:
                 fill = (120, 255, 200) if (c, r) == hover else (80, 220, 170)
                 pygame.draw.polygon(surf, fill, pts)
                 pygame.draw.polygon(surf, (200, 255, 230), pts, 2)
-        if hover not in booth_set and not _structural_blocked(hover[0], hover[1]):
+        if hover not in booth_set and not self._structural_blocked(hover[0], hover[1]):
             pts = [(int(p[0]), int(p[1])) for p in view.corners_floor(hover[0], hover[1])]
             if len(pts) >= 3:
                 pygame.draw.polygon(surf, (120, 255, 200), pts, 2)
@@ -736,7 +1027,7 @@ class MapEditor:
                 ic, ir = int(round(wc)), int(round(wr))
                 if not (0 <= ic < COLS and 0 <= ir < ROWS):
                     continue
-                if _structural_blocked(ic, ir):
+                if self._structural_blocked(ic, ir):
                     continue
                 is_open = lay.is_cell_walkable(i, j)
                 is_hover = hover == (i, j)
@@ -760,8 +1051,14 @@ class MapEditor:
 
         if self.selected in ("tiles", "axes"):
             self._draw_walkable_lattice(surf, view, lay)
-        if self.selected == "prober_front":
-            self._draw_prober_front(surf, view, font, lay)
+        if self.selected == "prober_front" and self.kind == "prober":
+            self._draw_prober_front(surf, view, font, lay)  # type: ignore[arg-type]
+        if self.kind == "cryo":
+            cl = lay  # type: ignore[assignment]
+            if self.selected == "bench_front":
+                self._draw_cryo_equipment_front(surf, view, font, cl, equip="bond")
+            if self.selected == "cryostat_front":
+                self._draw_cryo_equipment_front(surf, view, font, cl, equip="cryo")
 
         quad_outline(lay.play_bounds_corners, (180, 100, 255))
 
@@ -770,13 +1067,33 @@ class MapEditor:
                 self._draw_receiving_booths(surf, view, lay)
             self._draw_walkable_lattice(surf, view, lay)
 
+        if self.kind == "cryo":
+            cl = lay  # type: ignore[assignment]
+            for col, row, radius, color, active_sel in (
+                (cl.bond_c, cl.bond_r, cl.bond_radius, (200, 170, 90), "bond_table"),
+                (cl.cryostat_c, cl.cryostat_r, cl.cryostat_radius, (120, 200, 255), "cryostat"),
+            ):
+                sx, sy = view.center(col, row)
+                r_px = int(view.hh * radius * 1.1)
+                fill = (*color, 72 if self.selected == active_sel else 40)
+                layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+                pygame.draw.circle(layer, fill, (int(sx), int(sy)), r_px)
+                pygame.draw.circle(
+                    layer,
+                    color,
+                    (int(sx), int(sy)),
+                    r_px,
+                    3 if self.selected == active_sel else 2,
+                )
+                surf.blit(layer, (0, 0))
+
         zone_colors = {
             "PROBER_WAIT": (120, 180, 255),
             "TEST_BENCH": (100, 200, 170),
             "TEST_CHAMBER": (255, 160, 90),
             "PROBER_LOAD": (180, 190, 210),
         }
-        if self.selected.startswith("zone:"):
+        if self.kind == "prober" and self.selected.startswith("zone:"):
             for zid, zd in lay.zones.items():
                 zc = lay.prober_cx + zd.dx
                 zr = lay.prober_cy + zd.dy
@@ -821,8 +1138,9 @@ class MapEditor:
 
         n_blocked = len(lay.blocked_lattice)
         y = surf.get_height() - 112
+        title = "CRYO MAP EDITOR" if self.kind == "cryo" else "MAP EDITOR"
         lines = [
-            "MAP EDITOR — Editor toggle / M | Tab mode | auto-saves to dev_layout.json",
+            f"{title} — Editor toggle / M | Tab mode | auto-saves to {self._layout_save_name()}",
             f"Mode: {self.selected}  |  painted blocked tiles: {n_blocked}",
         ]
         if self.selected == "axes":
@@ -832,23 +1150,43 @@ class MapEditor:
         elif self.selected == "receiving":
             n_recv = len(lay.receiving_booths)
             lines.append(
-                f"Incoming wafer booths: {n_recv}  |  LMB add tile  RMB remove  |  drag handles or center to move"
+                f"Incoming sample booths: {n_recv}  |  LMB add tile  RMB remove  |  drag handles or center to move"
             )
         elif self.selected == "anchor":
-            lines.append("Drag center — moves prober + floor together (zone offsets unchanged)")
-        elif self.selected == "prober_front":
+            if self.kind == "cryo":
+                lines.append("Drag anchor — moves floor, bond table, cryostat, and booths together")
+            else:
+                lines.append("Drag center — moves prober + floor together (zone offsets unchanged)")
+        elif self.selected == "prober_front" and self.kind == "prober":
             lines.append(
                 "Green=ON TOP  Red=UNDER  Amber=FLIP?  |  drag origin, FRONT, yellow ring radius"
             )
             lines.append(
                 "Outside yellow ring: plane only — inside ring: FLIP? uses foot height"
             )
-        elif self.selected == "labels":
+        elif self.selected == "bond_table" and self.kind == "cryo":
+            lines.append("Drag bond table center / radius handle  |  [ ] adjust radius")
+        elif self.selected == "cryostat" and self.kind == "cryo":
+            lines.append("Drag cryostat center / radius handle  |  [ ] adjust radius")
+        elif self.selected == "bench_front" and self.kind == "cryo":
+            lines.append(
+                "Green=ON TOP  Red=UNDER  Amber=FLIP?  |  drag origin, BENCH FRONT, yellow ring"
+            )
+            lines.append("Outside yellow ring: plane only — inside ring: FLIP? uses foot height")
+        elif self.selected == "cryostat_front" and self.kind == "cryo":
+            lines.append(
+                "Green=ON TOP  Red=UNDER  Amber=FLIP?  |  drag origin, CRYO FRONT, yellow ring"
+            )
+            lines.append("Outside yellow ring: plane only — inside ring: FLIP? uses foot height")
+        elif self.selected == "labels" and self.kind == "prober":
             lines.append(
                 "Drag UI labels (storage queue, racks, prober bar, MHU) — preview stays visible"
             )
         else:
-            lines.append("Drag purple corner handles to resize play area  |  [ ] zone radius when a zone is selected")
+            if self.kind == "cryo":
+                lines.append("Drag purple corner handles to resize play area")
+            else:
+                lines.append("Drag purple corner handles to resize play area  |  [ ] zone radius when a zone is selected")
         sw = surf.get_width()
         for line in lines:
             t = font.render(line, True, (255, 220, 140))

@@ -22,6 +22,25 @@ from constants import (
 )
 from dev_layout import ZoneDef, get_layout, lattice_cell_corners, point_in_lattice_cell
 
+_floor_layout_override = None
+
+
+def set_floor_layout(lay) -> None:
+    """Pin walk/floor helpers to a layout (cryo lab) for the active level."""
+    global _floor_layout_override
+    _floor_layout_override = lay
+
+
+def clear_floor_layout() -> None:
+    global _floor_layout_override
+    _floor_layout_override = None
+
+
+def floor_layout():
+    if _floor_layout_override is not None:
+        return _floor_layout_override
+    return get_layout()
+
 
 class Cell(Enum):
     FLOOR = auto()
@@ -81,7 +100,7 @@ def test_label(t: TestSpec) -> str:
 
 def receiving_booths() -> List[Tuple[int, int]]:
     """Pickup tiles where incoming wafer lots spawn (editable in map editor)."""
-    return list(get_layout().receiving_booths)
+    return list(floor_layout().receiving_booths)
 
 
 def prober_visual_center() -> Tuple[float, float]:
@@ -92,8 +111,7 @@ def prober_visual_center() -> Tuple[float, float]:
 
 def layout_camera_anchor() -> Tuple[float, float]:
     """World point pinned to screen center — fixed so prober can move on the floor after reload."""
-    lay = get_layout()
-    return lay.view_anchor()
+    return floor_layout().view_anchor()
 
 
 def player_prober_depth_side(col: float, row: float) -> float:
@@ -318,7 +336,7 @@ def player_near_step(
 
 def _structural_blocked(col: int, row: int) -> bool:
     """Fixed map geometry (play bounds) — not the painted skew lattice."""
-    return not get_layout().is_inside_play_bounds(col, row)
+    return not floor_layout().is_inside_play_bounds(col, row)
 
 
 _STATION_CELLS = frozenset(
@@ -333,9 +351,9 @@ _STATION_CELLS = frozenset(
 )
 
 
-def _apply_lattice_floor(cells: List[List[Cell]]) -> None:
+def _apply_lattice_floor(cells: List[List[Cell]], lay=None) -> None:
     """Build walkable map from skew-lattice parallelograms (axes + paint define real tiles)."""
-    lay = get_layout()
+    lay = lay or floor_layout()
     origin = lay.tile_origin()
     ax, ay = lay.tile_axis_x, lay.tile_axis_y
 
@@ -378,7 +396,7 @@ def world_walkable(cells: List[List[Cell]], col: float, row: float) -> bool:
         return False
     if cells[ir][ic] in _STATION_CELLS:
         return True
-    return get_layout().open_at_world(gc, gr)
+    return floor_layout().open_at_world(gc, gr)
 
 
 def find_walkable_spawn(cells: List[List[Cell]]) -> Tuple[float, float]:
@@ -404,22 +422,26 @@ def find_walkable_spawn(cells: List[List[Cell]]) -> Tuple[float, float]:
     return 14.0, 12.0
 
 
-def default_map() -> List[List[Cell]]:
+def build_floor_map(lay=None) -> List[List[Cell]]:
+    lay = lay or floor_layout()
     g: List[List[Cell]] = [[Cell.WALL for _ in range(COLS)] for _ in range(ROWS)]
 
-    for c, r in receiving_booths():
+    for c, r in lay.receiving_booths:
         g[r][c] = Cell.RECEIVING
 
-    lay = get_layout()
     g[lay.finished_r][lay.finished_c] = Cell.FINISHED_RACK
 
-    _apply_lattice_floor(g)
+    _apply_lattice_floor(g, lay)
     return g
+
+
+def default_map() -> List[List[Cell]]:
+    return build_floor_map(get_layout())
 
 
 def refresh_map_from_layout() -> List[List[Cell]]:
     """Rebuild walkable grid after dev layout edits."""
-    return default_map()
+    return build_floor_map(floor_layout())
 
 
 def step_destination(

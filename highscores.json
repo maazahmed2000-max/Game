@@ -4,6 +4,16 @@
       "name": "Martin",
       "wafers": 6,
       "when": "2026-06-05"
+    },
+    "Katelyn": {
+      "name": "Katelyn",
+      "wafers": 2,
+      "when": "2026-06-23"
+    },
+    "Clarence": {
+      "name": "Clarence",
+      "wafers": 1,
+      "when": "2026-06-23"
     }
   }
 }

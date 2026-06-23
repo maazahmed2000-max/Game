@@ -32,6 +32,13 @@ SPAWN_MIN_S = 10.0
 SPAWN_MAX_S = 15.0
 MAX_WAFER_QUEUE = 6
 
+# Cryo level tester — automatic cool/warm timers (seconds)
+CRYO_COOL_S = 14.0
+CRYO_WARM_S = 12.0
+CRYO_ALIGN_HOLD_S = 2.5
+CRYO_TEST_S = 3.5
+CRYO_MAX_QUEUE = 4
+
 # HUD / world progress bar widths (pixels)
 HUD_PROGRESS_BAR_W = 168
 WORLD_PROGRESS_BAR_W = 110

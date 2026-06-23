@@ -514,6 +514,7 @@ def _blit_operator(
     operator: int,
     *,
     facing_right: bool,
+    facing_mirror: bool = False,
     moving: bool,
     carrying: bool,
 ) -> None:
@@ -522,6 +523,7 @@ def _blit_operator(
     sprite = assets.operator_frame(
         operator,
         facing_right=facing_right,
+        facing_mirror=facing_mirror,
         moving=moving,
         carrying=carrying,
         sprite_h=sprite_h,
@@ -539,6 +541,7 @@ def draw_players_iso(
     assets: Optional["GameAssets"] = None,
     moving: Optional[Sequence[bool]] = None,
     facings: Optional[Sequence[bool]] = None,
+    facing_mirrors: Optional[Sequence[bool]] = None,
     operators: Optional[Sequence[int]] = None,
 ) -> None:
     if assets is not None:
@@ -547,6 +550,11 @@ def draw_players_iso(
             carry = carries is not None and i < len(carries) and carries[i]
             mv = moving is not None and i < len(moving) and moving[i]
             face = facings[i] if facings is not None and i < len(facings) else True
+            mirror = (
+                facing_mirrors[i]
+                if facing_mirrors is not None and i < len(facing_mirrors)
+                else False
+            )
             op = operators[i] if operators is not None and i < len(operators) else 0
             _blit_operator(
                 surf,
@@ -556,6 +564,7 @@ def draw_players_iso(
                 row,
                 op,
                 facing_right=face,
+                facing_mirror=mirror,
                 moving=mv,
                 carrying=carry,
             )
@@ -702,6 +711,7 @@ def draw_prober_and_players_depth_sorted(
     *,
     moving: Optional[Sequence[bool]] = None,
     facings: Optional[Sequence[bool]] = None,
+    facing_mirrors: Optional[Sequence[bool]] = None,
     operators: Optional[Sequence[int]] = None,
 ) -> None:
     """Draw operator vs prober — only depth-fight when the player is near the machine."""
@@ -721,6 +731,7 @@ def draw_prober_and_players_depth_sorted(
             assets=assets,
             moving=moving,
             facings=facings,
+            facing_mirrors=facing_mirrors,
             operators=operators,
         )
 

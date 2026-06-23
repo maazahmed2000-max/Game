@@ -15,8 +15,16 @@ FrameKey = Tuple[int, str]  # (operator_row, pose_name)
 
 OPERATOR_HEIGHT_FACTOR = 7.0
 PROBER_WIDTH_FACTOR = 15.5
-OPERATOR_COUNT = 2
-OPERATOR_NAMES: Tuple[str, ...] = ("Martin", "Katelyn")
+BOND_BENCH_WIDTH_FACTOR = 5.0
+CRYOSTAT_WIDTH_FACTOR = 5.5
+OPERATOR_COUNT = 4
+OPERATOR_NAMES: Tuple[str, ...] = ("Martin", "Katelyn", "Norberto", "Clarence")
+
+# Column order in each 2×4 sprite sheet (left → right).
+POSE_COLUMNS_LEGACY: Tuple[str, ...] = ("idle", "walk", "hold_idle", "hold_walk")
+POSE_COLUMNS_V2: Tuple[str, ...] = ("idle", "hold_idle", "walk", "hold_walk")
+# Back-facing Clarence row: standing-with-sample is column 1 on the sheet.
+POSE_COLUMNS_V2_CLARENCE_RIGHT: Tuple[str, ...] = ("hold_idle", "idle", "walk", "hold_walk")
 
 WHITE_KEY = (255, 255, 255)
 BLACK_KEY = (0, 0, 0)
@@ -66,10 +74,12 @@ def _trim_visible(surf: pygame.Surface) -> pygame.Surface:
     return surf.subsurface(union).copy()
 
 
-def _trim_operator_frame(surf: pygame.Surface) -> pygame.Surface:
-    """Crop to the main sprite — ignore colorkey specks that widen the union bbox."""
+def _trim_operator_frame(surf: pygame.Surface, *, min_area: int = 600) -> pygame.Surface:
+    """Crop to the main sprite — drop colorkey specks and glint artifacts."""
     mask = pygame.mask.from_surface(surf)
-    rects = mask.get_bounding_rects()
+    rects = [r for r in mask.get_bounding_rects() if r.width * r.height >= min_area]
+    if not rects:
+        rects = mask.get_bounding_rects()
     if not rects:
         return surf
     if len(rects) == 1:
@@ -78,17 +88,55 @@ def _trim_operator_frame(surf: pygame.Surface) -> pygame.Surface:
     return surf.subsurface(main).copy()
 
 
-def _slice_operator_sheet(sheet: pygame.Surface) -> Dict[FrameKey, pygame.Surface]:
+def _slice_operator_sheet(
+    sheet: pygame.Surface,
+    *,
+    row_offset: int = 0,
+    column_poses: Tuple[str, ...] = POSE_COLUMNS_LEGACY,
+    row_column_poses: Dict[int, Tuple[str, ...]] | None = None,
+) -> Dict[FrameKey, pygame.Surface]:
     w, h = sheet.get_size()
-    cw, ch = w // 4, h // 2
-    names = ("idle", "walk", "hold_idle", "hold_walk")
+    cols = len(column_poses)
+    rows = 2
+    cw, ch = w // cols, h // rows
     out: Dict[FrameKey, pygame.Surface] = {}
-    for row in range(2):
-        for col, name in enumerate(names):
+    row_overrides = row_column_poses or {}
+    for row in range(rows):
+        poses = row_overrides.get(row, column_poses)
+        for col, name in enumerate(poses):
             rect = (col * cw, row * ch, cw, ch)
             frame = _trim_operator_frame(sheet.subsurface(rect).copy())
-            out[(row, name)] = frame
+            out[(row_offset + row, name)] = frame
     return out
+
+
+def _operator_sheet_colorkey(path: Path) -> Tuple[int, int, int]:
+    return WHITE_KEY
+
+
+def _merge_operator_sheets(
+    left_paths: Tuple[Tuple[Path, int, Tuple[str, ...]], ...],
+    right_paths: Tuple[
+        Tuple[Path, int, Tuple[str, ...], Dict[int, Tuple[str, ...]] | None],
+        ...,
+    ],
+) -> Tuple[Dict[FrameKey, pygame.Surface], Dict[FrameKey, pygame.Surface]]:
+    ops_left: Dict[FrameKey, pygame.Surface] = {}
+    ops_right: Dict[FrameKey, pygame.Surface] = {}
+    for path, row_offset, columns in left_paths:
+        keyed = _load_rgba(path, colorkey=_operator_sheet_colorkey(path))
+        ops_left.update(_slice_operator_sheet(keyed, row_offset=row_offset, column_poses=columns))
+    for path, row_offset, columns, row_overrides in right_paths:
+        keyed = _load_rgba(path, colorkey=_operator_sheet_colorkey(path))
+        ops_right.update(
+            _slice_operator_sheet(
+                keyed,
+                row_offset=row_offset,
+                column_poses=columns,
+                row_column_poses=row_overrides,
+            )
+        )
+    return ops_left, ops_right
 
 
 def _scale_to_height(surf: pygame.Surface, target_h: int) -> pygame.Surface:
@@ -141,6 +189,10 @@ class GameAssets:
         self._screen_h = SCREEN_H
         self._bg_raw: pygame.Surface | None = None
         self._prober_cluster_cache: dict[int, pygame.Surface] = {}
+        self.bond_bench: pygame.Surface | None = None
+        self._bond_bench_cache: dict[int, pygame.Surface] = {}
+        self.cryostat_art: pygame.Surface | None = None
+        self._cryostat_cache: dict[int, pygame.Surface] = {}
 
     @property
     def world_rect(self) -> pygame.Rect:
@@ -157,6 +209,8 @@ class GameAssets:
         self._screen_h = height
         self._scaled_cache.clear()
         self._prober_cluster_cache.clear()
+        self._bond_bench_cache.clear()
+        self._cryostat_cache.clear()
 
     def align_background_to_view(self, view: "IsoView") -> None:
         """Pin background art to the prober anchor; scale locked to the iso view."""
@@ -201,10 +255,26 @@ class GameAssets:
         stations_raw = _load_rgba(ASSETS_DIR / "stations.png", colorkey=WHITE_KEY)
         self.stations = _trim_visible(stations_raw)
 
-        ops_l = _load_rgba(ASSETS_DIR / "operators.png", colorkey=WHITE_KEY)
-        ops_r = _load_rgba(ASSETS_DIR / "operators_right.png", colorkey=WHITE_KEY)
-        self._ops_left = _slice_operator_sheet(ops_l)
-        self._ops_right = _slice_operator_sheet(ops_r)
+        bench_raw = _load_rgba(ASSETS_DIR / "bench.png", colorkey=WHITE_KEY)
+        self.bond_bench = _trim_visible(bench_raw)
+
+        cryo_raw = _load_rgba(ASSETS_DIR / "Cryostat.png", colorkey=WHITE_KEY)
+        self.cryostat_art = _trim_visible(cryo_raw)
+
+        left_specs = (
+            (ASSETS_DIR / "operators.png", 0, POSE_COLUMNS_LEGACY),
+            (ASSETS_DIR / "operators2.png", 2, POSE_COLUMNS_V2),
+        )
+        right_specs = (
+            (ASSETS_DIR / "operators_right.png", 0, POSE_COLUMNS_LEGACY, None),
+            (
+                ASSETS_DIR / "operators2_right.png",
+                2,
+                POSE_COLUMNS_V2,
+                {1: POSE_COLUMNS_V2_CLARENCE_RIGHT},
+            ),
+        )
+        self._ops_left, self._ops_right = _merge_operator_sheets(left_specs, right_specs)
 
         hold = self._ops_left[(0, "hold_idle")]
         self.wafer = _extract_wafer_from_hold(hold)
@@ -227,19 +297,22 @@ class GameAssets:
         operator: int,
         *,
         facing_right: bool,
+        facing_mirror: bool = False,
         moving: bool,
         carrying: bool,
         sprite_h: int,
     ) -> pygame.Surface:
         operator = max(0, min(OPERATOR_COUNT - 1, operator))
         pose = ("hold_walk" if moving else "hold_idle") if carrying else ("walk" if moving else "idle")
-        cache_key = (operator, facing_right, pose, sprite_h)
+        cache_key = (operator, facing_right, facing_mirror, pose, sprite_h)
         if cache_key in self._scaled_cache:
             return self._scaled_cache[cache_key]
 
         key: FrameKey = (operator, pose)
         sheet = self._ops_right if facing_right else self._ops_left
         scaled = _scale_to_height(sheet[key], sprite_h)
+        if facing_mirror:
+            scaled = pygame.transform.flip(scaled, True, False)
         self._scaled_cache[cache_key] = scaled
         return scaled
 
@@ -275,6 +348,76 @@ class GameAssets:
         cx, cy = int(center[0]), int(center[1])
         th = img.get_height()
         surf.blit(img, (cx - tw // 2, cy - th + int(th * 0.08)))
+
+    def _scaled_bond_bench(self, tw: int) -> pygame.Surface | None:
+        if self.bond_bench is None:
+            return None
+        if tw in self._bond_bench_cache:
+            return self._bond_bench_cache[tw]
+        sw, sh = self.bond_bench.get_size()
+        th = max(1, int(sh * tw / sw))
+        img = pygame.transform.smoothscale(self.bond_bench, (tw, th)).convert_alpha()
+        self._bond_bench_cache[tw] = img
+        return img
+
+    def _scaled_cryostat(self, tw: int) -> pygame.Surface | None:
+        if self.cryostat_art is None:
+            return None
+        if tw in self._cryostat_cache:
+            return self._cryostat_cache[tw]
+        sw, sh = self.cryostat_art.get_size()
+        th = max(1, int(sh * tw / sw))
+        img = pygame.transform.smoothscale(self.cryostat_art, (tw, th)).convert_alpha()
+        self._cryostat_cache[tw] = img
+        return img
+
+    def draw_bond_bench(
+        self,
+        surf: pygame.Surface,
+        center: Tuple[float, float],
+        max_width: float,
+    ) -> None:
+        """Hotplate bonder workbench — cryo level bond station art."""
+        tw = int(max_width)
+        img = self._scaled_bond_bench(tw)
+        if img is None:
+            return
+        cx, cy = int(center[0]), int(center[1])
+        th = img.get_height()
+        surf.blit(img, (cx - tw // 2, cy - th + int(th * 0.06)))
+
+    def draw_cryostat(
+        self,
+        surf: pygame.Surface,
+        center: Tuple[float, float],
+        max_width: float,
+    ) -> None:
+        """Cryostat table + rack — cryo level test station art."""
+        tw = int(max_width)
+        img = self._scaled_cryostat(tw)
+        if img is None:
+            return
+        cx, cy = int(center[0]), int(center[1])
+        th = img.get_height()
+        surf.blit(img, (cx - tw // 2, cy - th + int(th * 0.08)))
+
+    def bond_bench_foot_y(self, center: Tuple[float, float], max_width: float) -> float:
+        tw = int(max_width)
+        img = self._scaled_bond_bench(tw)
+        if img is None:
+            return center[1]
+        cy = center[1]
+        th = img.get_height()
+        return cy + th * 0.06
+
+    def cryostat_foot_y(self, center: Tuple[float, float], max_width: float) -> float:
+        tw = int(max_width)
+        img = self._scaled_cryostat(tw)
+        if img is None:
+            return center[1]
+        cy = center[1]
+        th = img.get_height()
+        return cy + th * 0.08
 
 
 def make_iso_view_for_background(

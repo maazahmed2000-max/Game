@@ -21,6 +21,19 @@ class Player:
         self.carrying_wafer = False
         self.carrying_order_idx: Optional[int] = None
         self.facing_right = True
+        self.facing_mirror = False
+
+    def _update_facing(self, dx: float, dy: float) -> None:
+        """D = right sheet; A = right sheet mirrored; S = left sheet (old A)."""
+        if dx > 0:
+            self.facing_right = True
+            self.facing_mirror = False
+        elif dx < 0:
+            self.facing_right = True
+            self.facing_mirror = True
+        elif dy > 0:
+            self.facing_right = False
+            self.facing_mirror = False
 
     def center_tile(self) -> Tuple[int, int]:
         return int(round(self.col)), int(round(self.row))
@@ -38,8 +51,7 @@ class Player:
     ) -> None:
         if dx == 0 and dy == 0:
             return
-        if dx != 0:
-            self.facing_right = dx > 0
+        self._update_facing(dx, dy)
         gx, gy = screen_input_to_grid(dx, dy)
         length = math.hypot(gx, gy)
         if length == 0:

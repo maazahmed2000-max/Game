@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional, Tuple
 
 import pygame
 
-from constants import HUD_PANEL_WIDTH, HUD_PROGRESS_BAR_W
+from constants import DEBUG_MAP_EDITOR, HUD_PANEL_WIDTH, HUD_PROGRESS_BAR_W
 
 if TYPE_CHECKING:
+    from cryo_lab import Cryostat, CryoSample
     from lab import ChuckStandbyTracker, StandbyPenaltyNotice, TestSpec, WaferOrder
+
+HelpTopic = Literal["menu", "level_select", "prober", "cryo"]
 
 
 def blit_centered(
@@ -285,6 +288,57 @@ def draw_shift_hud(
             y += 2
 
 
+def draw_cryo_hud(
+    surf: pygame.Surface,
+    panel: pygame.Rect,
+    fonts: tuple[pygame.font.Font, pygame.font.Font],
+    *,
+    shift_left: float,
+    samples_done: int,
+    samples: List["CryoSample"],
+    cryostat: "Cryostat",
+    status_lines: Optional[List[str]] = None,
+) -> None:
+    from cryo_lab import cryo_phase_label
+
+    f_ui, f_small = fonts
+    y = 6
+    y = blit_left(surf, panel, f_ui, y, f"Shift: {max(0, shift_left):.0f}s", (250, 252, 255))
+    y += 6
+    y = blit_left(surf, panel, f_ui, y, f"Done: {samples_done}", (230, 235, 248))
+    y += 8
+    y = blit_left(surf, panel, f_small, y, "Cryostat", (180, 210, 255))
+    y += 4
+    y = blit_left(surf, panel, f_small, y, cryo_phase_label(cryostat.phase), (140, 190, 240))
+    y += 8
+    n = len(samples)
+    header = "Queue:" if n == 0 else (f"Queue ({n}):" if n > 1 else "Queue (1):")
+    y = blit_left(surf, panel, f_small, y, header, (255, 235, 190))
+    y += 6
+    if not samples:
+        y = blit_left(surf, panel, f_small, y, "  —", (210, 200, 175))
+    else:
+        for i, sample in enumerate(samples):
+            prefix = "▸ " if i == 0 else "  "
+            tag = ""
+            if sample.in_cryostat:
+                tag = " (in cryo)"
+            y = blit_left(
+                surf,
+                panel,
+                f_small,
+                y,
+                f"{prefix}{sample.label}{tag}",
+                (255, 225, 175),
+            )
+            y += 2
+    if status_lines:
+        y += 6
+        for line in status_lines:
+            y = blit_left(surf, panel, f_small, y, line, (185, 195, 215))
+            y += 2
+
+
 def draw_menu_name_chip(
     surf: pygame.Surface,
     rect: pygame.Rect,
@@ -328,3 +382,183 @@ def draw_menu_highscores(
         color = (230, 210, 150) if i == 0 else (175, 182, 198)
         surf.blit(font.render(row, True, color), (rect.x + 12, y))
         y += font.get_height() + 3
+
+
+_HELP_COPY: dict[HelpTopic, Tuple[str, Tuple[str, ...], Tuple[str, ...]]] = {
+    "menu": (
+        "Operator select",
+        (
+            "Pick your operator (1–4 or click a card).",
+            "Edit the name on the selected card if you like.",
+            "Continue → choose a level.",
+        ),
+        (
+            "Move: —",
+            "1–4 / arrows: pick operator",
+            "Enter: continue",
+            "Esc: quit",
+        ),
+    ),
+    "level_select": (
+        "Level select",
+        (
+            "Level 1 — Room-temp prober test floor.",
+            "Level 2 — Cryo hotplate + cryostat cycle.",
+            "Finish as many lots as you can before time runs out.",
+        ),
+        (
+            "1 / 2: pick level",
+            "Arrows: change level",
+            "Enter: start",
+            "Esc: back to operators",
+        ),
+    ),
+    "prober": (
+        "Level 1 — Prober flow",
+        (
+            "1. Pick up wafer at incoming booth",
+            "2. Load on prober chuck (free chuck only)",
+            "3. Wait for cassette inventory at MHU",
+            "4. Set test at rack (A/D) — match wafer recipe",
+            "5. Run test chamber, then place in finished rack",
+            "Idle chucks cost shift time after the first wafer arrives",
+        ),
+        (
+            "WASD / D-pad: move",
+            "Space / Use: interact",
+            "A / D at rack: change test dial",
+            "Esc: end shift (menu)",
+        ),
+    ),
+    "cryo": (
+        "Level 2 — Cryo flow",
+        (
+            "1. Pick up sample at incoming booth",
+            "2. Bond on hotplate bonder",
+            "3. Load in warm cryostat → start cooldown",
+            "4. Hold Space at cryostat to align (when cold)",
+            "5. Start quick test → start warm-up",
+            "6. Remove sample → place in outgoing rack",
+        ),
+        (
+            "WASD / D-pad: move",
+            "Space / Use: interact / hold to align",
+            "Esc: end shift (menu)",
+        ),
+    ),
+}
+
+
+def _help_editor_lines() -> Tuple[str, ...]:
+    if not DEBUG_MAP_EDITOR:
+        return ()
+    return ("M / Editor toggle: map layout editor",)
+
+
+def help_button_rect(screen_w: int, screen_h: int, *, reserve_editor: bool = False) -> pygame.Rect:
+    """Small ? control — top-right; leaves room for Editor toggle when reserve_editor."""
+    del screen_h
+    size = 22
+    x = screen_w - 12 - size
+    if reserve_editor:
+        x -= 44 + 6
+    return pygame.Rect(x, 9, size, size)
+
+
+def draw_help_button(
+    surf: pygame.Surface,
+    rect: pygame.Rect,
+    font: pygame.font.Font,
+    *,
+    hovered: bool,
+    active: bool,
+) -> None:
+    fill = (72, 110, 160) if active else ((58, 72, 104) if hovered else (42, 48, 62))
+    pygame.draw.circle(surf, fill, rect.center, rect.width // 2)
+    border = (255, 228, 120) if active else (140, 150, 170)
+    pygame.draw.circle(surf, border, rect.center, rect.width // 2, 1)
+    mark = font.render("?", True, (245, 248, 255))
+    surf.blit(mark, (rect.centerx - mark.get_width() // 2, rect.centery - mark.get_height() // 2 - 1))
+
+
+def help_overlay_rect(
+    screen_w: int,
+    screen_h: int,
+    title_font: pygame.font.Font,
+    body_font: pygame.font.Font,
+    topic: HelpTopic,
+) -> pygame.Rect:
+    title, flow_lines, key_lines = _HELP_COPY[topic]
+    editor_lines = _help_editor_lines()
+    pad_x, pad_y = 22, 18
+    line_h = body_font.get_height() + 4
+    section_gap = 10
+    inner_w = 420
+    lines = 2 + len(flow_lines) + 1 + len(key_lines) + len(editor_lines) + 1
+    inner_h = title_font.get_height() + section_gap + lines * line_h + pad_y * 2
+    w = min(inner_w + pad_x * 2, screen_w - 24)
+    h = min(inner_h, screen_h - 48)
+    return pygame.Rect(screen_w // 2 - w // 2, screen_h // 2 - h // 2, w, h)
+
+
+def draw_help_overlay(
+    surf: pygame.Surface,
+    panel: pygame.Rect,
+    title_font: pygame.font.Font,
+    body_font: pygame.font.Font,
+    topic: HelpTopic,
+) -> None:
+    dim = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 150))
+    surf.blit(dim, (0, 0))
+
+    pygame.draw.rect(surf, (22, 26, 34), panel, border_radius=12)
+    pygame.draw.rect(surf, (255, 228, 120), panel, 2, border_radius=12)
+
+    title, flow_lines, key_lines = _HELP_COPY[topic]
+    editor_lines = _help_editor_lines()
+    x = panel.x + 20
+    y = panel.y + 16
+    t = title_font.render(title, True, (255, 228, 140))
+    surf.blit(t, (x, y))
+    y += t.get_height() + 12
+
+    sec = body_font.render("Flow", True, (180, 200, 230))
+    surf.blit(sec, (x, y))
+    y += sec.get_height() + 6
+    for line in flow_lines:
+        surf.blit(body_font.render(line, True, (210, 218, 235)), (x, y))
+        y += body_font.get_height() + 4
+
+    y += 6
+    sec = body_font.render("Keys", True, (180, 200, 230))
+    surf.blit(sec, (x, y))
+    y += sec.get_height() + 6
+    for line in key_lines + editor_lines:
+        surf.blit(body_font.render(line, True, (190, 198, 215)), (x, y))
+        y += body_font.get_height() + 4
+
+    hint = body_font.render("Click ? or Esc to close", True, (130, 138, 158))
+    surf.blit(hint, (panel.centerx - hint.get_width() // 2, panel.bottom - hint.get_height() - 12))
+
+
+def help_handle_event(
+    event: pygame.event.Event,
+    *,
+    help_open: bool,
+    help_btn: pygame.Rect,
+    overlay: Optional[pygame.Rect],
+) -> Tuple[bool, bool]:
+    """Toggle or dismiss help. Returns (help_open, consumed)."""
+    if event.type == pygame.KEYDOWN:
+        if event.key in (pygame.K_h, pygame.K_F1):
+            return (not help_open, True)
+        if event.key == pygame.K_ESCAPE and help_open:
+            return (False, True)
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        pos = event.pos
+        if help_btn.collidepoint(pos):
+            return (not help_open, True)
+        if help_open and overlay is not None and not overlay.collidepoint(pos):
+            return (False, True)
+    return (help_open, False)

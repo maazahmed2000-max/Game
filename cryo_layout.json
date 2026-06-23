@@ -1,0 +1,93 @@
+{
+  "play_bounds_corners": [
+    [
+      6.982142857142858,
+      18.732142857142858
+    ],
+    [
+      22.271825396825395,
+      17.96626984126984
+    ],
+    [
+      24.03968253968255,
+      4.817460317460318
+    ],
+    [
+      9.295634920634923,
+      6.6567460317460325
+    ]
+  ],
+  "receiving_booths": [
+    [
+      14,
+      6
+    ]
+  ],
+  "view_anchor_c": 13.0,
+  "view_anchor_r": 10.0,
+  "tile_origin_c": 12.53968253968254,
+  "tile_origin_r": 10.984126984126986,
+  "tile_axis_x": [
+    2.726587301587303,
+    -0.4123015873015863
+  ],
+  "tile_axis_y": [
+    0.3753968253968267,
+    -1.6801587301587304
+  ],
+  "blocked_lattice": [
+    [
+      -3,
+      -2
+    ],
+    [
+      -3,
+      0
+    ],
+    [
+      -3,
+      2
+    ],
+    [
+      -2,
+      11
+    ],
+    [
+      -1,
+      -4
+    ],
+    [
+      -1,
+      -3
+    ],
+    [
+      -1,
+      -1
+    ],
+    [
+      -1,
+      0
+    ]
+  ],
+  "lattice_user_defined": true,
+  "finished_c": 17,
+  "finished_r": 5,
+  "bond_c": 11.200396825396822,
+  "bond_r": 16.89484126984127,
+  "bond_radius": 1.35,
+  "bond_front_origin_c": 9.82738095238095,
+  "bond_front_origin_r": 16.410714285714285,
+  "bond_front_dx": -1.1742063492063473,
+  "bond_front_dy": -1.368650793650792,
+  "bond_sort_near_radius": 4.376947826124136,
+  "bond_sort_side_clear": 0.35,
+  "cryostat_c": 11.924603174603178,
+  "cryostat_r": 11.980158730158731,
+  "cryostat_radius": 1.3192013739585635,
+  "cryostat_front_origin_c": 11.164682539682543,
+  "cryostat_front_origin_r": 11.692460317460318,
+  "cryostat_front_dx": -3.2357142857142875,
+  "cryostat_front_dy": -2.402380952380952,
+  "cryostat_sort_near_radius": 7.0,
+  "cryostat_sort_side_clear": 0.35
+}
